@@ -141,8 +141,7 @@ client.on('messageCreate', async (message) => {
     const args = message.content.trim().split(/\s+/);
     const command = args[0].toLowerCase();
 
-    // 1. !verify Command
-     (command === '!verify') {
+   
         // 1. !verify Command (Simplified Verification Embed)
     if (command === '!verify') {
         if (message.guild) {
