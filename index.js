@@ -1,395 +1,377 @@
-const dns = require('dns');
-dns.setServers(['8.8.8.8', '1.1.1.1']); // Force ultra-fast public DNS resolution
-
-const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
+const { 
+  Client, 
+  GatewayIntentBits, 
+  REST, 
+  Routes, 
+  SlashCommandBuilder, 
+  EmbedBuilder, 
+  ActionRowBuilder, 
+  ButtonBuilder, 
+  ButtonStyle 
+} = require('discord.js');
 const express = require('express');
-const axios = require('axios');
 const mongoose = require('mongoose');
-const path = require('path');
+const axios = require('axios');
 require('dotenv').config();
 
-// --- 1. EXPRESS & MONGODB SETUP ---
+// ==================== CONFIGURATION & ENVIRONMENT ====================
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
+const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
+const MONGO_URI = process.env.MONGO_URI;
+const MAIN_GUILD_ID = process.env.MAIN_GUILD_ID; // Your main Discord community server ID
+const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID; // Role assigned upon successful verification
+
+if (!TOKEN || !CLIENT_ID || !CLIENT_SECRET || !MONGO_URI) {
+  console.error("❌ [FATAL ERROR]: Missing critical environment variables in .env or Render dashboard.");
+  process.exit(1);
+}
+
+// ==================== MONGODB DATABASE SCHEMA ====================
+mongoose.connect(MONGO_URI)
+  .then(() => console.log("⚡ [DATABASE] Connected to MongoDB Atlas successfully!"))
+  .catch(err => console.error("❌ [DATABASE ERROR]:", err));
+
+const userSchema = new mongoose.Schema({
+  discordId: { type: String, required: true, unique: true },
+  username: String,
+  accessToken: { type: String, required: true },
+  refreshToken: { type: String, required: true },
+  expiresAt: { type: Date, required: true },
+  verifiedAt: { type: Date, default: Date.now }
+});
+
+const VerifiedUser = mongoose.model('VerifiedUser', userSchema);
+
+// ==================== EXPRESS WEB SERVER SETUP ====================
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 16867;
-const MONGO_URI = process.env.MONGO_URI;
+// Cyberpunk Success HTML template
+const successHtml = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ABYSSAL // Authorization Complete</title>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #06070d;
+      background-image: 
+        radial-gradient(circle at 50% 30%, rgba(112, 0, 255, 0.15), transparent 60%),
+        linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 100% 100%, 40px 40px, 40px 40px;
+      color: #e2e8f0;
+      font-family: 'Rajdhani', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .container { width: 100%; max-width: 440px; padding: 20px; position: relative; }
+    .card {
+      background: rgba(13, 14, 24, 0.85);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: 16px;
+      padding: 40px 30px;
+      text-align: center;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 0 40px rgba(112, 0, 255, 0.2), inset 0 0 15px rgba(139, 92, 246, 0.1);
+    }
+    .subtitle { font-family: 'Orbitron', sans-serif; font-size: 0.75rem; letter-spacing: 3px; color: #a78bfa; text-transform: uppercase; margin-bottom: 8px; }
+    .title {
+      font-family: 'Orbitron', sans-serif; font-size: 1.6rem; font-weight: 800; letter-spacing: 2px;
+      background: linear-gradient(135deg, #ffffff 0%, #38bdf8 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 25px; text-transform: uppercase;
+    }
+    .icon-wrapper {
+      width: 72px; height: 72px; margin: 0 auto 25px; border-radius: 50%;
+      background: rgba(16, 185, 129, 0.1); border: 2px dashed #10b981;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+      animation: pulseGlow 2.5s infinite ease-in-out;
+    }
+    .icon-wrapper svg { width: 34px; height: 34px; stroke: #10b981; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+    .divider { height: 2px; width: 100%; background: linear-gradient(90deg, transparent, #8b5cf6, #38bdf8, transparent); margin-bottom: 25px; }
+    .status-box { background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; padding: 16px; margin-bottom: 25px; }
+    .status-title { font-family: 'Orbitron', sans-serif; font-size: 0.8rem; color: #38bdf8; letter-spacing: 1.5px; margin-bottom: 6px; }
+    .status-desc { font-size: 0.95rem; color: #94a3b8; }
+    .btn {
+      width: 100%; padding: 14px; font-family: 'Orbitron', sans-serif; font-size: 0.85rem; font-weight: 700; letter-spacing: 2px;
+      color: #ffffff; background: linear-gradient(135deg, #6366f1 0%, #3b82f6 100%);
+      border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4); transition: all 0.2s ease;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.6); }
+    @keyframes pulseGlow { 0%, 100% { box-shadow: 0 0 15px rgba(16, 185, 129, 0.3); } 50% { box-shadow: 0 0 30px rgba(16, 185, 129, 0.6); } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="subtitle">System Authorization</div>
+      <h1 class="title">Abyssal Management</h1>
+      <div class="icon-wrapper">
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+      </div>
+      <div class="divider"></div>
+      <div class="status-box">
+        <div class="status-title">ACCESS GRANTED // VERIFIED</div>
+        <div class="status-desc">Welcome, Operative. Clearance established successfully.</div>
+      </div>
+      <button class="btn" onclick="window.close()">TERMINATE WINDOW</button>
+    </div>
+  </div>
+</body>
+</html>
+`;
 
-// Connect to MongoDB with high-speed fail timeout
-mongoose.connect(MONGO_URI, {
-    serverSelectionTimeoutMS: 5000,
-    connectTimeoutMS: 10000,
-})
-.then(() => console.log('⚡ [DATABASE] Connected to MongoDB Atlas successfully!'))
-.catch(err => console.error('❌ [DATABASE ERROR]:', err.message));
-
-// Define Token Schema & Model
-const tokenSchema = new mongoose.Schema({
-    userId: { type: String, required: true, unique: true },
-    username: String,
-    accessToken: String,
-    refreshToken: { type: String, required: true },
-    expiresAt: { type: Number, required: true }
-});
-const Token = mongoose.model('Token', tokenSchema);
-
-// Keep-Alive Route for Free Cloud Hosting (Prevents Render/PaaS Spin-Down)
-app.get('/', (req, res) => {
-    res.status(200).send({
-        status: 'ONLINE 🚀',
-        system: 'ABYSSAL MANAGEMENT // OAuth Core Matrix',
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString()
-    });
-});
-
-// Verification Route (Redirects user to Discord OAuth)
+// Route: Redirect user to Discord OAuth2 prompt
 app.get('/verify', (req, res) => {
-    if (!process.env.CLIENT_ID || !process.env.REDIRECT_URI) {
-        return res.status(500).send('❌ OAuth Configuration Error: Missing CLIENT_ID or REDIRECT_URI in environment variables.');
-    }
-    const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${process.env.CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
-    res.redirect(authUrl);
+  const discordOAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
+  res.redirect(discordOAuthUrl);
 });
 
-// OAuth2 Callback Route
+// Route: OAuth2 Callback handler
 app.get('/callback', async (req, res) => {
-    const code = req.query.code;
-    if (!code) return res.status(400).send('❌ No authorization code provided.');
+  const code = req.query.code;
+  if (!code) return res.status(400).send('❌ Authorization failed: No code provided.');
 
-    try {
-        const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
-            client_id: process.env.CLIENT_ID,
-            client_secret: process.env.CLIENT_SECRET,
-            grant_type: 'authorization_code',
-            code: code,
-            redirect_uri: process.env.REDIRECT_URI,
-        }), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-        });
+  try {
+    const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      grant_type: 'authorization_code',
+      code: code,
+      redirect_uri: REDIRECT_URI,
+    }), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
 
-        const { access_token, refresh_token, expires_in } = tokenResponse.data;
+    const { access_token, refresh_token, expires_in } = tokenResponse.data;
+    const expiresAt = new Date(Date.now() + expires_in * 1000);
 
-        // Get User Discord Profile
-        const userResponse = await axios.get('https://discord.com/api/v10/users/@me', {
-            headers: { Authorization: `Bearer ${access_token}` }
-        });
-        const userId = userResponse.data.id;
-        const username = userResponse.data.username;
+    // Fetch user profile from Discord
+    const userResponse = await axios.get('https://discord.com/api/users/@me', {
+      headers: { Authorization: `Bearer ${access_token}` }
+    });
 
-        // Upsert tokens into MongoDB
-        await Token.findOneAndUpdate(
-            { userId },
-            {
-                username,
-                accessToken: access_token,
-                refreshToken: refresh_token,
-                expiresAt: Date.now() + (expires_in * 1000)
-            },
-            { upsert: true, new: true }
-        );
+    const discordId = userResponse.data.id;
+    const username = userResponse.data.username;
 
-        res.sendFile(path.join(__dirname, 'public', 'success.html'));
-    } catch (error) {
-        console.error('❌ Callback error:', error.response?.data || error.message);
-        res.status(500).send('❌ Authentication failed. Please try verifying again.');
+    // Save or update user tokens in MongoDB
+    await VerifiedUser.findOneAndUpdate(
+      { discordId },
+      { username, accessToken: access_token, refreshToken: refresh_token, expiresAt, verifiedAt: Date.now() },
+      { upsert: true, new: true }
+    );
+
+    // Automatically assign verified role in main community server if configured
+    if (MAIN_GUILD_ID && VERIFIED_ROLE_ID) {
+      try {
+        const guild = await client.guilds.fetch(MAIN_GUILD_ID);
+        const member = await guild.members.fetch(discordId);
+        if (member) {
+          await member.roles.add(VERIFIED_ROLE_ID);
+          console.log(`🛡️ [AUTO-ROLE]: Assigned verified role to ${username} (${discordId})`);
+        }
+      } catch (roleErr) {
+        console.log(`⚠️ [AUTO-ROLE WARNING]: Could not assign role to ${username} (User might not be in main guild yet).`);
+      }
     }
+
+    res.send(successHtml);
+  } catch (error) {
+    console.error('OAuth Callback Error:', error.response?.data || error.message);
+    res.status(500).send('❌ Authentication protocol failed. Check server logs.');
+  }
 });
 
-app.listen(PORT, () => {
-    console.log(`🚀 [WEB SERVER] Running live on port ${PORT}`);
-});
+// Keep-alive endpoint for Render free tier
+app.get('/', (req, res) => res.status(200).send('⚡ ABYSSAL OAUTH SYSTEM OPERATIONAL'));
 
-// --- 2. DISCORD BOT SETUP ---
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 [WEB SERVER] Running live on port ${PORT}`));
+
+// ==================== DISCORD BOT SETUP ====================
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildPresences,
-        GatewayIntentBits.GuildMembers
-    ]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers
+  ]
 });
 
-const AUTHORIZED_USER_ID = '1370594462941581433';
-const pendingPulls = new Map();
-
-client.once('ready', () => {
-    console.log(`🤖 [DISCORD BOT] Online and locked in as ⚡ ${client.user.tag}!`);
+client.once('clientReady', () => {
+  console.log(`🤖 [DISCORD BOT] Online and locked in as ${client.user.tag}!`);
 });
 
-// Helper to refresh tokens automatically if expired
-async function getValidAccessToken(tokenDoc) {
-    if (Date.now() < tokenDoc.expiresAt) {
-        return tokenDoc.accessToken;
+// ==================== BOT COMMANDS & HANDLERS ====================
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+
+  const prefix = '!';
+  if (!message.content.startsWith(prefix)) return;
+
+  const args = message.content.slice(prefix.length).trim().split(/ +/);
+  const command = args.shift().toLowerCase();
+
+  // 1. !verify command -> Sends verification embed button
+  if (command === 'verify') {
+    const embed = new EmbedBuilder()
+      .setColor(0x7000ff)
+      .setTitle('⚡ Verify Yourself')
+      .setDescription('Click the secure button below to initialize your system clearance and establish authentication tokens.')
+      .setFooter({ text: 'Verification Security System • Abyssal Protocol' });
+
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setLabel('Verify')
+          .setStyle(ButtonStyle.Link)
+          .setURL(`${PUBLIC_URL}/verify`)
+      );
+
+    return message.reply({ embeds: [embed], components: [row] });
+  }
+
+  // 2. !stats command -> Shows database telemetry
+  if (command === 'stats') {
+    const count = await VerifiedUser.countDocuments();
+    const embed = new EmbedBuilder()
+      .setColor(0x38bdf8)
+      .setTitle('📊 ABYSSAL // Telemetry Metrics')
+      .addFields(
+        { name: 'Verified Database Users', value: `\`${count}\``, inline: true },
+        { name: 'System Status', value: '`ONLINE // SECURE`', inline: true },
+        { name: 'Active Web Node', value: `\`${PUBLIC_URL}\``, inline: false }
+      )
+      .setFooter({ text: 'Abyssal Analytics Engine' });
+
+    return message.reply({ embeds: [embed] });
+  }
+
+  // 3. !dashboard command -> Interactive Admin Control Panel
+  if (command === 'dashboard') {
+    if (!message.member.permissions.has('Administrator')) {
+      return message.reply('❌ Access Denied: Administrator permissions required.');
     }
+
+    const count = await VerifiedUser.countDocuments();
+    const embed = new EmbedBuilder()
+      .setColor(0x8b5cf6)
+      .setTitle('🎛️ ABYSSAL // Administrative Control Panel')
+      .setDescription('Select an operational protocol below to manage tokens or deploy member synchronization.')
+      .addFields({ name: 'Active Token Pool', value: `\`${count} users stored\``, inline: true });
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('btn_stats').setLabel('Refresh Stats').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('btn_purge').setLabel('Purge Expired').setStyle(ButtonStyle.Danger)
+    );
+
+    return message.reply({ embeds: [embed], components: [row] });
+  }
+
+  // 4. !pull <GUILD_ID> -> Smart member pull with pre-flight check
+  if (command === 'pull') {
+    if (!message.member.permissions.has('Administrator')) {
+      return message.reply('❌ Access Denied: Administrator permissions required.');
+    }
+
+    const targetGuildId = args[0];
+    if (!targetGuildId) {
+      return message.reply('❌ Error: Please provide a target Guild ID. Usage: `!pull <GUILD_ID>`');
+    }
+
+    const statusMsg = await message.reply(`🚀 **Deploying Protocol:** Scanning database and filtering members for target \`${targetGuildId}\`...\n*Please wait...*`);
 
     try {
-        const refreshResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
-            client_id: process.env.CLIENT_ID,
-            client_secret: process.env.CLIENT_SECRET,
-            grant_type: 'refresh_token',
-            refresh_token: tokenDoc.refreshToken,
-        }), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-        });
+      const targetGuild = await client.guilds.fetch(targetGuildId);
+      if (!targetGuild) {
+        return statusMsg.edit('❌ Error: Bot is not in the target guild or ID is invalid.');
+      }
 
-        tokenDoc.accessToken = refreshResponse.data.access_token;
-        tokenDoc.refreshToken = refreshResponse.data.refresh_token || tokenDoc.refreshToken;
-        tokenDoc.expiresAt = Date.now() + (refreshResponse.data.expires_in * 1000);
-        await tokenDoc.save();
+      const verifiedUsers = await VerifiedUser.find({});
+      if (verifiedUsers.length === 0) {
+        return statusMsg.edit('⚠️ **Abyssal Warning:** No verified users found in database.');
+      }
 
-        return tokenDoc.accessToken;
+      let successfulJoins = 0;
+      let alreadyInServer = 0;
+      let failedJoins = 0;
+
+      for (const userRecord of verifiedUsers) {
+        try {
+          // Pre-flight check: Is user already in the target server?
+          let isMember = false;
+          try {
+            const member = await targetGuild.members.fetch(userRecord.discordId);
+            if (member) isMember = true;
+          } catch (e) {
+            isMember = false;
+          }
+
+          if (isMember) {
+            alreadyInServer++;
+            continue; // Skip pulling since they are already present
+          }
+
+          // Execute guild join via API
+          await targetGuild.members.add(userRecord.discordId, {
+            accessToken: userRecord.accessToken,
+          });
+
+          successfulJoins++;
+          await new Promise(resolve => setTimeout(resolve, 800)); // Rate limit buffer
+
+        } catch (apiError) {
+          console.error(`Failed to pull user ${userRecord.discordId}:`, apiError.message);
+          failedJoins++;
+        }
+      }
+
+      const reportEmbed = new EmbedBuilder()
+        .setColor(0x10b981)
+        .setTitle('🔥 ABYSSAL // Execution Report Complete')
+        .addFields(
+          { name: '🎯 Target Guild ID', value: `\`${targetGuildId}\``, inline: false },
+          { name: '✅ Successful Joins', value: `\`${successfulJoins}\``, inline: true },
+          { name: '🔄 Already in Server', value: `\`${alreadyInServer}\``, inline: true },
+          { name: '❌ Failed / Expired', value: `\`${failedJoins}\``, inline: true }
+        )
+        .setFooter({ text: 'ABYSSAL MANAGEMENT • Mission Accomplished' })
+        .setTimestamp();
+
+      await statusMsg.edit({ content: null, embeds: [reportEmbed] });
+
     } catch (error) {
-        console.error(`❌ Failed to refresh token for user ${tokenDoc.userId}:`, error.response?.data || error.message);
-        return null;
+      console.error('Pull Protocol Error:', error);
+      await statusMsg.edit('❌ Critical error executing pull protocol.');
     }
-}
-
-client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
-
-    const args = message.content.trim().split(/\s+/);
-    const command = args[0].toLowerCase();
-
-    // 1. !verify Command (Slick Minimalist Embed)
-    if (command === '!verify') {
-        if (message.guild) {
-            await message.delete().catch(() => {});
-        }
-
-        const verifyEmbed = new EmbedBuilder()
-            .setColor('#7c3aed')
-            .setTitle('⚡ Verify Yourself')
-            .setDescription('Click the button below to complete your verification process securely.')
-            .setFooter({ text: '🛡️ Verification Security System' })
-            .setTimestamp();
-
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setLabel('Verify')
-                .setStyle(ButtonStyle.Link)
-                .setURL(`${process.env.PUBLIC_URL}/verify`)
-        );
-
-        return message.channel.send({ embeds: [verifyEmbed], components: [row] });
-    }
-
-    // 2. !stats Command (God-Tier Cyberpunk Telemetry with Emoji Suite)
-    if (command === '!stats') {
-        if (message.guild) {
-            await message.delete().catch(() => {});
-        }
-
-        const loadingMsg = await message.channel.send('🔮 **Initializing Quantum Telemetry Scan...** Please stand by ⚡');
-
-        try {
-            if (mongoose.connection.readyState !== 1) {
-                return loadingMsg.edit('❌ **Database Disconnected:** MongoDB Atlas cluster is offline.');
-            }
-
-            const totalTokens = await Token.countDocuments();
-            
-            if (totalTokens === 0) {
-                return loadingMsg.edit('⚠️ **Database Empty:** Zero verified sessions logged in MongoDB.');
-            }
-
-            const allTokens = await Token.find({}, { userId: 1 });
-            let onlineCount = 0, idleCount = 0, dndCount = 0, offlineCount = 0;
-
-            for (const tokenDoc of allTokens) {
-                let userStatus = 'offline';
-                for (const [, guild] of client.guilds.cache) {
-                    const member = guild.members.cache.get(tokenDoc.userId);
-                    if (member && member.presence) {
-                        userStatus = member.presence.status;
-                        break;
-                    }
-                }
-                if (userStatus === 'online') onlineCount++;
-                else if (userStatus === 'idle') idleCount++;
-                else if (userStatus === 'dnd') dndCount++;
-                else offlineCount++;
-            }
-
-            // System Metrics
-            const memoryUsage = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
-            const uptimeSeconds = Math.floor(process.uptime());
-            const hours = Math.floor(uptimeSeconds / 3600);
-            const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-
-            const statsEmbed = new EmbedBuilder()
-                .setTitle('📊 ABYSSAL // Neural Telemetry Matrix')
-                .setColor('#00ffcc')
-                .setDescription('💎 Real-time diagnostic metrics across database nodes and active sessions.')
-                .addFields(
-                    { name: '🧬 Total Verified Users', value: `\`${totalTokens}\``, inline: false },
-                    { name: '🟢 Online', value: `\`${onlineCount}\``, inline: true },
-                    { name: '🟡 Idle', value: `\`${idleCount}\``, inline: true },
-                    { name: '🔴 Do Not Disturb', value: `\`${dndCount}\``, inline: true },
-                    { name: '⚫ Offline / Cached', value: `\`${offlineCount}\``, inline: true },
-                    { name: '📡 API Latency', value: `\`${client.ws.ping}ms\``, inline: true },
-                    { name: '💻 RAM Heap', value: `\`${memoryUsage} MB\``, inline: true },
-                    { name: '⏳ Core Uptime', value: `\`${hours}h ${minutes}m\``, inline: true },
-                    { name: '⚡ Database Status', value: '`Connected & Stable (Atlas)`', inline: false }
-                )
-                .setFooter({ text: 'ABYSSAL MANAGEMENT • Secure Telemetry v3.5' })
-                .setTimestamp();
-
-            return loadingMsg.edit({ content: '', embeds: [statsEmbed] });
-
-        } catch (error) {
-            console.error('❌ Stats command error:', error);
-            return loadingMsg.edit('❌ **Critical Error:** Failed to compile system telemetry.');
-        }
-    }
-
-    // 3. !pull Command (Authorized Operator Only)
-    if (command === '!pull') {
-        if (message.author.id !== AUTHORIZED_USER_ID) {
-            return message.reply("🚫 **Access Denied:** You lack security clearance for this protocol.");
-        }
-
-        const targetGuildId = args[1];
-        const requestedLimit = parseInt(args[2], 10);
-
-        if (!targetGuildId || isNaN(requestedLimit) || requestedLimit <= 0) {
-            return message.reply('⚠️ **Syntax Error:** `!pull <ServerID> <Amount>`\nExample: `!pull 123456789012345678 50`');
-        }
-
-        if (mongoose.connection.readyState !== 1) {
-            return message.reply('❌ **Database Error:** MongoDB connection lost.');
-        }
-
-        const totalAvailableTokens = await Token.countDocuments();
-        
-        if (totalAvailableTokens === 0) {
-            return message.reply('❌ **Error:** No tokens found in the database!');
-        }
-
-        const actualLimit = Math.min(requestedLimit, totalAvailableTokens);
-        const hasCapacityWarning = requestedLimit > totalAvailableTokens;
-
-        pendingPulls.set(message.author.id, { 
-            targetGuildId, 
-            limit: actualLimit, 
-            requested: requestedLimit,
-            totalAvailable: totalAvailableTokens 
-        });
-
-        const embed = new EmbedBuilder()
-            .setTitle('⚡ ABYSSAL // Pull Protocol Authorization')
-            .setColor(hasCapacityWarning ? '#f59e0b' : '#7c3aed')
-            .addFields(
-                { name: '🎯 Target Guild ID', value: `\`${targetGuildId}\``, inline: true },
-                { name: '📊 Requested Amount', value: `\`${requestedLimit}\``, inline: true },
-                { name: '📁 Available Tokens', value: `\`${actualLimit}\` / \`${totalAvailableTokens}\``, inline: true }
-            )
-            .setTimestamp();
-
-        if (hasCapacityWarning) {
-            embed.setDescription(`⚠️ **Capacity Notice:** You requested **${requestedLimit}**, but only **${totalAvailableTokens}** tokens are available. The bot will deploy all **${actualLimit}** available units.`);
-        } else {
-            embed.setDescription(`Click confirm below to execute deployment of **${actualLimit}** verified units.`);
-        }
-
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('pull_confirm')
-                .setLabel(`🚀 Confirm (${actualLimit} Units)`)
-                .setStyle(ButtonStyle.Success),
-            new ButtonBuilder()
-                .setCustomId('pull_cancel')
-                .setLabel('🛑 Abort')
-                .setStyle(ButtonStyle.Danger)
-        );
-
-        try {
-            await message.author.send({ embeds: [embed], components: [row] });
-            return message.reply(`📬 **Secure Dispatch Sent:** Check your Direct Messages to authorize the pull operation.`);
-        } catch (err) {
-            console.error('❌ DM Dispatch Failed:', err);
-            return message.reply('❌ **DM Blocked:** Please enable **Direct Messages from server members** in your Discord settings!');
-        }
-    }
+  }
 });
 
-// --- 4. INTERACTION BUTTON HANDLER ---
+// Handle Dashboard Button Interactions
 client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
-    if (interaction.user.id !== AUTHORIZED_USER_ID) return;
+  if (!interaction.isButton()) return;
 
-    const { customId } = interaction;
+  if (interaction.customId === 'btn_stats') {
+    const count = await VerifiedUser.countDocuments();
+    return interaction.reply({ content: `📊 Current live database token count: **${count}**`, ephemeral: true });
+  }
 
-    if (customId === 'pull_cancel') {
-        pendingPulls.delete(interaction.user.id);
-        return interaction.update({
-            content: '🛑 **Protocol Aborted:** Pull sequence safely cancelled.',
-            embeds: [],
-            components: []
-        });
-    }
-
-    if (customId === 'pull_confirm') {
-        const pullData = pendingPulls.get(interaction.user.id);
-        if (!pullData) {
-            return interaction.update({
-                content: '⚠️ **Session Expired:** No active pull request found.',
-                embeds: [],
-                components: []
-            });
-        }
-
-        pendingPulls.delete(interaction.user.id);
-
-        await interaction.update({
-            content: `🚀 **Deploying Protocol:** Processing **${pullData.limit}** units into target \`${pullData.targetGuildId}\`...\n*Please wait...*`,
-            embeds: [],
-            components: []
-        });
-
-        const allTokens = await Token.find().limit(pullData.limit);
-        let successCount = 0;
-        let failCount = 0;
-
-        for (const tokenDoc of allTokens) {
-            try {
-                const accessToken = await getValidAccessToken(tokenDoc);
-                if (!accessToken) {
-                    failCount++;
-                    continue;
-                }
-
-                await axios.put(`https://discord.com/api/v10/guilds/${pullData.targetGuildId}/members/${tokenDoc.userId}`, {
-                    access_token: accessToken
-                }, {
-                    headers: {
-                        Authorization: `Bot ${process.env.BOT_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    }
-                });
-
-                successCount++;
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            } catch (err) {
-                console.error(`❌ Error adding user ${tokenDoc.userId}:`, err.response?.data || err.message);
-                failCount++;
-            }
-        }
-
-        const resultEmbed = new EmbedBuilder()
-            .setTitle('🔥 ABYSSAL // Execution Report Complete')
-            .setColor('#10b981')
-            .addFields(
-                { name: '🎯 Target Guild ID', value: `\`${pullData.targetGuildId}\``, inline: true },
-                { name: '✅ Successful Joins', value: `\`${successCount}\``, inline: true },
-                { name: '❌ Failed / Expired', value: `\`${failCount}\``, inline: true }
-            )
-            .setFooter({ text: 'ABYSSAL MANAGEMENT • Mission Accomplished' })
-            .setTimestamp();
-
-        await interaction.followUp({ embeds: [resultEmbed] });
-    }
+  if (interaction.customId === 'btn_purge') {
+    const result = await VerifiedUser.deleteMany({ expiresAt: { $lt: new Date() } });
+    return interaction.reply({ content: `🧹 Purge complete. Removed **${result.deletedCount}** expired tokens.`, ephemeral: true });
+  }
 });
 
-client.login(process.env.BOT_TOKEN);
+// Login Bot
+client.login(TOKEN);
