@@ -12,7 +12,8 @@ const axios = require('axios');
 require('dotenv').config();
 
 // ==================== CONFIGURATION & ENVIRONMENT ====================
-const TOKEN = process.env.DISCORD_TOKEN;
+// Change this line:
+const TOKEN = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
