@@ -1,305 +1,180 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ABYSSAL MANAGEMENT // Secure Authorization</title>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;600&display=swap');
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ABYSSAL // Authorization Complete</title>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #06070d;
+      background-image: 
+        radial-gradient(circle at 50% 30%, rgba(112, 0, 255, 0.15), transparent 60%),
+        linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 100% 100%, 40px 40px, 40px 40px;
+      color: #e2e8f0;
+      font-family: 'Rajdhani', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
 
-        body {
-            background-color: #030307;
-            background-image: 
-                radial-gradient(circle at 50% 20%, rgba(88, 28, 135, 0.25) 0%, transparent 50%),
-                radial-gradient(circle at 80% 80%, rgba(14, 165, 233, 0.1) 0%, transparent 40%),
-                linear-gradient(rgba(255,255,255,0.01) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255,255,255,0.01) 1px, transparent 1px);
-            background-size: 100% 100%, 100% 100%, 30px 30px, 30px 30px;
-            font-family: 'Inter', sans-serif;
-            color: #94a3b8;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            overflow: hidden;
-        }
+    .container {
+      width: 100%;
+      max-width: 440px;
+      padding: 20px;
+      position: relative;
+    }
 
-        /* Ambient background floating light shards */
-        .ambient-glow {
-            position: absolute;
-            width: 400px;
-            height: 400px;
-            background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(59, 130, 246, 0.1));
-            filter: blur(100px);
-            border-radius: 50%;
-            z-index: 0;
-            animation: floatGlow 8s ease-in-out infinite alternate;
-        }
+    .card {
+      background: rgba(13, 14, 24, 0.85);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: 16px;
+      padding: 40px 30px;
+      text-align: center;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 0 40px rgba(112, 0, 255, 0.2), inset 0 0 15px rgba(139, 92, 246, 0.1);
+      position: relative;
+      overflow: hidden;
+    }
 
-        @keyframes floatGlow {
-            0% { transform: translate(-100px, -50px) scale(0.9); }
-            100% { transform: translate(100px, 50px) scale(1.1); }
-        }
+    .subtitle {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.75rem;
+      letter-spacing: 3px;
+      color: #a78bfa;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
 
-        .card {
-            position: relative;
-            z-index: 10;
-            background: rgba(10, 11, 16, 0.85);
-            backdrop-filter: blur(20px);
-            border: 1px solid rgba(139, 92, 246, 0.25);
-            padding: 45px 35px;
-            border-radius: 20px;
-            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7), 0 0 40px rgba(139, 92, 246, 0.15);
-            text-align: center;
-            max-width: 440px;
-            width: 90%;
-            transform: translateY(20px);
-            opacity: 0;
-            animation: cardEntrance 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-        }
+    .title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 1.6rem;
+      font-weight: 800;
+      letter-spacing: 2px;
+      background: linear-gradient(135deg, #ffffff 0%, #38bdf8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 25px;
+      text-transform: uppercase;
+    }
 
-        @keyframes cardEntrance {
-            to { transform: translateY(0); opacity: 1; }
-        }
+    /* Animated Checkmark Badge */
+    .icon-wrapper {
+      width: 72px;
+      height: 72px;
+      margin: 0 auto 25px;
+      border-radius: 50%;
+      background: rgba(16, 185, 129, 0.1);
+      border: 2px dashed #10b981;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+      animation: pulseGlow 2.5s infinite ease-in-out;
+    }
 
-        /* Shining Header Brand Name */
-        .brand-container {
-            margin-bottom: 25px;
-        }
+    .icon-wrapper svg {
+      width: 34px;
+      height: 34px;
+      stroke: #10b981;
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+    }
 
-        .brand-subtitle {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 10px;
-            letter-spacing: 4px;
-            color: #38bdf8;
-            text-transform: uppercase;
-            margin-bottom: 6px;
-            opacity: 0.8;
-        }
+    .divider {
+      height: 2px;
+      width: 100%;
+      background: linear-gradient(90deg, transparent, #8b5cf6, #38bdf8, transparent);
+      margin-bottom: 25px;
+    }
 
-        .brand-title {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 26px;
-            font-weight: 900;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            color: #ffffff;
-            position: relative;
-            display: inline-block;
-            background: linear-gradient(92deg, #fff 20%, #c084fc 50%, #38bdf8 80%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            filter: drop-shadow(0 0 15px rgba(192, 132, 252, 0.4));
-        }
+    .status-box {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 25px;
+    }
 
-        /* Crazy Shining Sweep Effect */
-        .brand-title::after {
-            content: 'ABYSSAL MANAGEMENT';
-            position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.8), transparent);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            mix-blend-mode: overlay;
-            animation: shineSweep 3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-        }
+    .status-title {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.8rem;
+      color: #38bdf8;
+      letter-spacing: 1.5px;
+      margin-bottom: 6px;
+    }
 
-        @keyframes shineSweep {
-            0% { transform: translateX(-100%); }
-            20% { transform: translateX(100%); }
-            100% { transform: translateX(100%); }
-        }
+    .status-desc {
+      font-size: 0.95rem;
+      color: #94a3b8;
+    }
 
-        /* Pulsating Core Icon */
-        .core-icon-wrap {
-            position: relative;
-            width: 84px;
-            height: 84px;
-            margin: 0 auto 25px auto;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
+    .btn {
+      width: 100%;
+      padding: 14px;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 0.85rem;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: #ffffff;
+      background: linear-gradient(135deg, #6366f1 0%, #3b82f6 100%);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
+      transition: all 0.2s ease;
+    }
 
-        .core-ring {
-            position: absolute;
-            width: 100%; height: 100%;
-            border-radius: 50%;
-            border: 2px dashed rgba(168, 85, 247, 0.4);
-            animation: spinRing 12s linear infinite;
-        }
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(99, 102, 241, 0.6);
+    }
 
-        @keyframes spinRing {
-            to { transform: rotate(360deg); }
-        }
-
-        .core-circle {
-            width: 64px;
-            height: 64px;
-            background: radial-gradient(circle, rgba(147, 51, 234, 0.25) 0%, rgba(15, 23, 42, 0.8) 100%);
-            border: 1px solid rgba(192, 132, 252, 0.5);
-            border-radius: 50%;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            box-shadow: 0 0 25px rgba(168, 85, 247, 0.3);
-            animation: pulseCore 2s ease-in-out infinite alternate;
-        }
-
-        @keyframes pulseCore {
-            0% { transform: scale(0.95); box-shadow: 0 0 15px rgba(168, 85, 247, 0.2); }
-            100% { transform: scale(1.05); box-shadow: 0 0 30px rgba(56, 189, 248, 0.5); }
-        }
-
-        .checkmark {
-            font-size: 24px;
-            color: #38bdf8;
-            filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.8));
-        }
-
-        /* Dynamic Status Messages */
-        .status-box {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            padding: 14px;
-            margin-bottom: 25px;
-        }
-
-        #status-text {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 11px;
-            letter-spacing: 1px;
-            color: #c084fc;
-            margin-bottom: 6px;
-        }
-
-        .user-highlight {
-            color: #ffffff;
-            font-weight: 600;
-        }
-
-        .desc {
-            font-size: 13px;
-            color: #64748b;
-            line-height: 1.4;
-        }
-
-        /* Futuristic Action Button */
-        .btn-action {
-            position: relative;
-            width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #7c3aed 0%, #2563eb 100%);
-            color: #ffffff;
-            font-family: 'Orbitron', sans-serif;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            overflow: hidden;
-            box-shadow: 0 10px 25px rgba(124, 58, 237, 0.4);
-            transition: all 0.3s ease;
-        }
-
-        .btn-action:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 15px 30px rgba(56, 189, 248, 0.4);
-            filter: brightness(1.1);
-        }
-
-        .btn-action:active {
-            transform: translateY(1px);
-        }
-
-        /* Loading Bar Micro-UI */
-        .progress-bar-track {
-            width: 100%;
-            height: 3px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 3px;
-            margin-bottom: 20px;
-            overflow: hidden;
-        }
-
-        .progress-bar-fill {
-            width: 0%;
-            height: 100%;
-            background: linear-gradient(90deg, #7c3aed, #38bdf8);
-            box-shadow: 0 0 10px #38bdf8;
-            transition: width 0.4s ease;
-        }
-    </style>
+    @keyframes pulseGlow {
+      0%, 100% {
+        box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
+      }
+      50% {
+        box-shadow: 0 0 30px rgba(16, 185, 129, 0.6);
+      }
+    }
+  </style>
 </head>
 <body>
 
-    <div class="ambient-glow"></div>
-
+  <div class="container">
     <div class="card">
-        <div class="brand-container">
-            <div class="brand-subtitle">System Authorization</div>
-            <h1 class="brand-title">Abyssal Management</h1>
-        </div>
+      <div class="subtitle">System Authorization</div>
+      <h1 class="title">Abyssal Management</h1>
+      
+      <div class="icon-wrapper">
+        <svg viewBox="0 0 24 24">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      </div>
 
-        <div class="core-icon-wrap">
-            <div class="core-ring"></div>
-            <div class="core-circle">
-                <span class="checkmark" id="core-symbol">⚡</span>
-            </div>
-        </div>
+      <div class="divider"></div>
 
-        <div class="progress-bar-track">
-            <div class="progress-bar-fill" id="p-bar"></div>
-        </div>
+      <div class="status-box">
+        <div class="status-title">ACCESS GRANTED // VERIFIED</div>
+        <div class="status-desc">Welcome, Operative. Clearance established successfully.</div>
+      </div>
 
-        <div class="status-box">
-            <div id="status-text">INITIALIZING SECURE HANDSHAKE...</div>
-            <div class="desc" id="desc-text">Synchronizing credentials with Discord mainframes.</div>
-        </div>
-
-        <button onclick="window.close();" class="btn-action" id="close-btn" style="display: none;">Terminate Window</button>
+      <button class="btn" onclick="window.close()">TERMINATE WINDOW</button>
     </div>
+  </div>
 
-    <script>
-        // Cinematic multi-step loading sequence
-        const statusText = document.getElementById('status-text');
-        const descText = document.getElementById('desc-text');
-        const progressBar = document.getElementById('p-bar');
-        const coreSymbol = document.getElementById('core-symbol');
-        const closeBtn = document.getElementById('close-btn');
-
-        setTimeout(() => {
-            progressBar.style.width = '45%';
-            statusText.textContent = 'ESTABLISHING OAUTH TOKEN...';
-            descText.textContent = 'Encrypting user session variables into secure memory.';
-        }, 400);
-
-        setTimeout(() => {
-            progressBar.style.width = '80%';
-            statusText.textContent = 'STORING DATABASE NODES...';
-            descText.textContent = 'Registering credentials into MongoDB storage clusters.';
-        }, 1100);
-
-        setTimeout(() => {
-            progressBar.style.width = '100%';
-            statusText.textContent = 'ACCESS GRANTED // VERIFIED';
-            statusText.style.color = '#38bdf8';
-            descText.innerHTML = 'Welcome, <span class="user-highlight" id="user-tag">Operative</span>. Clearance established successfully.';
-            coreSymbol.textContent = '✓';
-            closeBtn.style.display = 'block';
-
-            // Grab username from query parameter if available
-            const urlParams = new URLSearchParams(window.location.search);
-            const user = urlParams.get('user');
-            if (user) {
-                document.getElementById('user-tag').textContent = user;
-            }
-        }, 1800);
-    </script>
 </body>
 </html>
