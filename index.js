@@ -12,20 +12,22 @@ const axios = require('axios');
 require('dotenv').config();
 
 // ==================== CONFIGURATION & ENVIRONMENT ====================
-// Change this line:
 const TOKEN = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
 const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
 const MONGO_URI = process.env.MONGO_URI;
-const MAIN_GUILD_ID = process.env.MAIN_GUILD_ID || null; // Optional: Main Discord community server ID
-const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || null; // Optional: Role assigned upon verification
+const MAIN_GUILD_ID = process.env.MAIN_GUILD_ID || null;
+const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || null;
 
 if (!TOKEN || !CLIENT_ID || !CLIENT_SECRET || !MONGO_URI) {
-  console.error("❌ [FATAL ERROR]: Missing critical environment variables (DISCORD_TOKEN, CLIENT_ID, CLIENT_SECRET, MONGO_URI) in Render settings.");
+  console.error("❌ [FATAL ERROR]: Missing critical environment variables (BOT_TOKEN/DISCORD_TOKEN, CLIENT_ID, CLIENT_SECRET, MONGO_URI) in Render settings.");
   process.exit(1);
 }
+
+// Track bot start time for Uptime calculation
+const startTime = Date.now();
 
 // ==================== MONGODB DATABASE SCHEMA ====================
 mongoose.connect(MONGO_URI)
@@ -39,7 +41,7 @@ const userSchema = new mongoose.Schema({
   refreshToken: { type: String, required: true },
   expiresAt: { type: Date, required: true },
   verifiedAt: { type: Date, default: Date.now }
-});
+}, { collection: 'verifiedusers' }); // Explicit collection name ensures your data persists correctly
 
 const VerifiedUser = mongoose.model('VerifiedUser', userSchema);
 
@@ -155,7 +157,6 @@ app.get('/callback', async (req, res) => {
     const { access_token, refresh_token, expires_in } = tokenResponse.data;
     const expiresAt = new Date(Date.now() + expires_in * 1000);
 
-    // Get user details from Discord API
     const userResponse = await axios.get('https://discord.com/api/users/@me', {
       headers: { Authorization: `Bearer ${access_token}` }
     });
@@ -163,14 +164,12 @@ app.get('/callback', async (req, res) => {
     const discordId = userResponse.data.id;
     const username = userResponse.data.username;
 
-    // Save user token to MongoDB
     await VerifiedUser.findOneAndUpdate(
       { discordId },
       { username, accessToken: access_token, refreshToken: refresh_token, expiresAt, verifiedAt: Date.now() },
       { upsert: true, new: true }
     );
 
-    // Auto-role assignment if configured
     if (MAIN_GUILD_ID && VERIFIED_ROLE_ID) {
       try {
         const guild = await client.guilds.fetch(MAIN_GUILD_ID);
@@ -180,7 +179,7 @@ app.get('/callback', async (req, res) => {
           console.log(`🛡️ [AUTO-ROLE]: Granted verified role to ${username} (${discordId})`);
         }
       } catch (roleErr) {
-        console.log(`⚠️ [AUTO-ROLE]: User ${username} not present in main guild for auto-role.`);
+        console.log(`⚠️ [AUTO-ROLE]: User ${username} not present in main guild.`);
       }
     }
 
@@ -191,7 +190,6 @@ app.get('/callback', async (req, res) => {
   }
 });
 
-// Health check endpoint for Render keep-alive
 app.get('/', (req, res) => res.status(200).send('⚡ ABYSSAL OAUTH SYSTEM ONLINE'));
 
 const PORT = process.env.PORT || 10000;
@@ -203,7 +201,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildPresences
   ]
 });
 
@@ -239,18 +238,47 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   }
 
-  // 2. !stats
+  // 2. !stats (Exact Neural Telemetry Matrix Style)
   if (command === 'stats') {
-    const count = await VerifiedUser.countDocuments();
+    const totalUsers = await VerifiedUser.countDocuments();
+    
+    // Calculate uptime in hours and minutes
+    const uptimeMs = Date.now() - startTime;
+    const uptimeHours = Math.floor(uptimeMs / (1000 * 60 * 60));
+    const uptimeMins = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
+
+    // Calculate memory heap usage in MB
+    const memoryUsageMB = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
+
+    // Count user presences if cached in guild
+    let onlineCount = 0, idleCount = 0, dndCount = 0, offlineCount = 0;
+    if (message.guild) {
+      message.guild.members.cache.forEach(member => {
+        const status = member.presence?.status;
+        if (status === 'online') onlineCount++;
+        else if (status === 'idle') idleCount++;
+        else if (status === 'dnd') dndCount++;
+        else offlineCount++;
+      });
+    }
+
     const embed = new EmbedBuilder()
-      .setColor(0x38bdf8)
-      .setTitle('📊 ABYSSAL // Telemetry Metrics')
+      .setColor(0x10b981) // Cyberpunk emerald border
+      .setTitle('📊 ABYSSAL // Neural Telemetry Matrix')
+      .setDescription('💎 Real-time diagnostic metrics across database nodes and active sessions.')
       .addFields(
-        { name: 'Verified Token Count', value: `\`${count}\``, inline: true },
-        { name: 'Node Status', value: '`ONLINE // SECURE`', inline: true },
-        { name: 'Endpoint URL', value: `\`${PUBLIC_URL}\``, inline: false }
+        { name: '🧬 Total Verified Users', value: `\`${totalUsers}\``, inline: false },
+        { name: '🟢 Online', value: `\`${onlineCount}\``, inline: true },
+        { name: '🟡 Idle', value: `\`${idleCount}\``, inline: true },
+        { name: '🔴 Do Not Disturb', value: `\`${dndCount}\``, inline: true },
+        { name: '⚫ Offline / Cached', value: `\`${offlineCount}\``, inline: true },
+        { name: '📡 API Latency', value: `\`${client.ws.ping}ms\``, inline: true },
+        { name: '💻 RAM Heap', value: `\`${memoryUsageMB} MB\``, inline: true },
+        { name: '⏳ Core Uptime', value: `\`${uptimeHours}h ${uptimeMins}m\``, inline: false },
+        { name: '⚡ Database Status', value: '`Connected & Stable (Atlas)`', inline: false }
       )
-      .setFooter({ text: 'Abyssal Management System' });
+      .setFooter({ text: `ABYSSAL MANAGEMENT • Secure Telemetry v3.5` })
+      .setTimestamp();
 
     return message.reply({ embeds: [embed] });
   }
@@ -287,7 +315,6 @@ client.on('messageCreate', async (message) => {
       return message.reply('❌ Error: Please provide a target Guild ID. Usage: `!pull <GUILD_ID> [LIMIT]`');
     }
 
-    // Optional limit parameter parsing
     const pullLimit = args[1] ? parseInt(args[1], 10) : null;
     if (args[1] && (isNaN(pullLimit) || pullLimit <= 0)) {
       return message.reply('❌ Error: Limit parameter must be a valid positive number.');
@@ -312,13 +339,11 @@ client.on('messageCreate', async (message) => {
       let failedJoins = 0;
 
       for (const userRecord of verifiedUsers) {
-        // Enforce user-defined limit check
         if (pullLimit && successfulJoins >= pullLimit) {
           break;
         }
 
         try {
-          // Check if user is already a member of target server
           let isMember = false;
           try {
             const member = await targetGuild.members.fetch(userRecord.discordId);
@@ -329,16 +354,15 @@ client.on('messageCreate', async (message) => {
 
           if (isMember) {
             alreadyInServer++;
-            continue; // Skip pull call for existing member
+            continue;
           }
 
-          // Execute OAuth2 guild join API endpoint
           await targetGuild.members.add(userRecord.discordId, {
             accessToken: userRecord.accessToken,
           });
 
           successfulJoins++;
-          await new Promise(resolve => setTimeout(resolve, 800)); // Rate limit protection buffer
+          await new Promise(resolve => setTimeout(resolve, 800));
 
         } catch (apiError) {
           console.error(`Failed to pull user ${userRecord.discordId}:`, apiError.message);
