@@ -1,9 +1,6 @@
 const { 
   Client, 
   GatewayIntentBits, 
-  REST, 
-  Routes, 
-  SlashCommandBuilder, 
   EmbedBuilder, 
   ActionRowBuilder, 
   ButtonBuilder, 
@@ -21,11 +18,11 @@ const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
 const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
 const MONGO_URI = process.env.MONGO_URI;
-const MAIN_GUILD_ID = process.env.MAIN_GUILD_ID; // Your main Discord community server ID
-const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID; // Role assigned upon successful verification
+const MAIN_GUILD_ID = process.env.MAIN_GUILD_ID || null; // Optional: Main Discord community server ID
+const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || null; // Optional: Role assigned upon verification
 
 if (!TOKEN || !CLIENT_ID || !CLIENT_SECRET || !MONGO_URI) {
-  console.error("❌ [FATAL ERROR]: Missing critical environment variables in .env or Render dashboard.");
+  console.error("❌ [FATAL ERROR]: Missing critical environment variables (DISCORD_TOKEN, CLIENT_ID, CLIENT_SECRET, MONGO_URI) in Render settings.");
   process.exit(1);
 }
 
@@ -132,13 +129,13 @@ const successHtml = `
 </html>
 `;
 
-// Route: Redirect user to Discord OAuth2 prompt
+// Redirect to Discord OAuth2 Authorization Code endpoint
 app.get('/verify', (req, res) => {
   const discordOAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
   res.redirect(discordOAuthUrl);
 });
 
-// Route: OAuth2 Callback handler
+// OAuth2 Callback endpoint
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send('❌ Authorization failed: No code provided.');
@@ -157,7 +154,7 @@ app.get('/callback', async (req, res) => {
     const { access_token, refresh_token, expires_in } = tokenResponse.data;
     const expiresAt = new Date(Date.now() + expires_in * 1000);
 
-    // Fetch user profile from Discord
+    // Get user details from Discord API
     const userResponse = await axios.get('https://discord.com/api/users/@me', {
       headers: { Authorization: `Bearer ${access_token}` }
     });
@@ -165,36 +162,36 @@ app.get('/callback', async (req, res) => {
     const discordId = userResponse.data.id;
     const username = userResponse.data.username;
 
-    // Save or update user tokens in MongoDB
+    // Save user token to MongoDB
     await VerifiedUser.findOneAndUpdate(
       { discordId },
       { username, accessToken: access_token, refreshToken: refresh_token, expiresAt, verifiedAt: Date.now() },
       { upsert: true, new: true }
     );
 
-    // Automatically assign verified role in main community server if configured
+    // Auto-role assignment if configured
     if (MAIN_GUILD_ID && VERIFIED_ROLE_ID) {
       try {
         const guild = await client.guilds.fetch(MAIN_GUILD_ID);
         const member = await guild.members.fetch(discordId);
         if (member) {
           await member.roles.add(VERIFIED_ROLE_ID);
-          console.log(`🛡️ [AUTO-ROLE]: Assigned verified role to ${username} (${discordId})`);
+          console.log(`🛡️ [AUTO-ROLE]: Granted verified role to ${username} (${discordId})`);
         }
       } catch (roleErr) {
-        console.log(`⚠️ [AUTO-ROLE WARNING]: Could not assign role to ${username} (User might not be in main guild yet).`);
+        console.log(`⚠️ [AUTO-ROLE]: User ${username} not present in main guild for auto-role.`);
       }
     }
 
     res.send(successHtml);
   } catch (error) {
     console.error('OAuth Callback Error:', error.response?.data || error.message);
-    res.status(500).send('❌ Authentication protocol failed. Check server logs.');
+    res.status(500).send('❌ Authentication protocol failed.');
   }
 });
 
-// Keep-alive endpoint for Render free tier
-app.get('/', (req, res) => res.status(200).send('⚡ ABYSSAL OAUTH SYSTEM OPERATIONAL'));
+// Health check endpoint for Render keep-alive
+app.get('/', (req, res) => res.status(200).send('⚡ ABYSSAL OAUTH SYSTEM ONLINE'));
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 [WEB SERVER] Running live on port ${PORT}`));
@@ -213,7 +210,7 @@ client.once('clientReady', () => {
   console.log(`🤖 [DISCORD BOT] Online and locked in as ${client.user.tag}!`);
 });
 
-// ==================== BOT COMMANDS & HANDLERS ====================
+// ==================== COMMAND HANDLERS ====================
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
@@ -223,42 +220,41 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // 1. !verify command -> Sends verification embed button
+  // 1. !verify
   if (command === 'verify') {
     const embed = new EmbedBuilder()
       .setColor(0x7000ff)
-      .setTitle('⚡ Verify Yourself')
-      .setDescription('Click the secure button below to initialize your system clearance and establish authentication tokens.')
-      .setFooter({ text: 'Verification Security System • Abyssal Protocol' });
+      .setTitle('⚡ System Clearance & Verification')
+      .setDescription('Click the secure button below to complete OAuth2 authentication and grant access clearance.')
+      .setFooter({ text: 'Abyssal Security Protocol' });
 
-    const row = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setLabel('Verify')
-          .setStyle(ButtonStyle.Link)
-          .setURL(`${PUBLIC_URL}/verify`)
-      );
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('Verify System Clearance')
+        .setStyle(ButtonStyle.Link)
+        .setURL(`${PUBLIC_URL}/verify`)
+    );
 
     return message.reply({ embeds: [embed], components: [row] });
   }
 
-  // 2. !stats command -> Shows database telemetry
+  // 2. !stats
   if (command === 'stats') {
     const count = await VerifiedUser.countDocuments();
     const embed = new EmbedBuilder()
       .setColor(0x38bdf8)
       .setTitle('📊 ABYSSAL // Telemetry Metrics')
       .addFields(
-        { name: 'Verified Database Users', value: `\`${count}\``, inline: true },
-        { name: 'System Status', value: '`ONLINE // SECURE`', inline: true },
-        { name: 'Active Web Node', value: `\`${PUBLIC_URL}\``, inline: false }
+        { name: 'Verified Token Count', value: `\`${count}\``, inline: true },
+        { name: 'Node Status', value: '`ONLINE // SECURE`', inline: true },
+        { name: 'Endpoint URL', value: `\`${PUBLIC_URL}\``, inline: false }
       )
-      .setFooter({ text: 'Abyssal Analytics Engine' });
+      .setFooter({ text: 'Abyssal Management System' });
 
     return message.reply({ embeds: [embed] });
   }
 
-  // 3. !dashboard command -> Interactive Admin Control Panel
+  // 3. !dashboard
   if (command === 'dashboard') {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('❌ Access Denied: Administrator permissions required.');
@@ -268,8 +264,8 @@ client.on('messageCreate', async (message) => {
     const embed = new EmbedBuilder()
       .setColor(0x8b5cf6)
       .setTitle('🎛️ ABYSSAL // Administrative Control Panel')
-      .setDescription('Select an operational protocol below to manage tokens or deploy member synchronization.')
-      .addFields({ name: 'Active Token Pool', value: `\`${count} users stored\``, inline: true });
+      .setDescription('Manage active tokens or review system telemetry using the interface controls below.')
+      .addFields({ name: 'Database Tokens', value: `\`${count} users registered\``, inline: true });
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('btn_stats').setLabel('Refresh Stats').setStyle(ButtonStyle.Primary),
@@ -279,7 +275,7 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   }
 
-  // 4. !pull <GUILD_ID> -> Smart member pull with pre-flight check
+  // 4. !pull <GUILD_ID> [LIMIT]
   if (command === 'pull') {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('❌ Access Denied: Administrator permissions required.');
@@ -287,20 +283,27 @@ client.on('messageCreate', async (message) => {
 
     const targetGuildId = args[0];
     if (!targetGuildId) {
-      return message.reply('❌ Error: Please provide a target Guild ID. Usage: `!pull <GUILD_ID>`');
+      return message.reply('❌ Error: Please provide a target Guild ID. Usage: `!pull <GUILD_ID> [LIMIT]`');
     }
 
-    const statusMsg = await message.reply(`🚀 **Deploying Protocol:** Scanning database and filtering members for target \`${targetGuildId}\`...\n*Please wait...*`);
+    // Optional limit parameter parsing
+    const pullLimit = args[1] ? parseInt(args[1], 10) : null;
+    if (args[1] && (isNaN(pullLimit) || pullLimit <= 0)) {
+      return message.reply('❌ Error: Limit parameter must be a valid positive number.');
+    }
+
+    const limitNotice = pullLimit ? `(Target Limit: ${pullLimit} users)` : '(Unlimited)';
+    const statusMsg = await message.reply(`🚀 **Deploying Protocol:** Processing member synchronization into target \`${targetGuildId}\` ${limitNotice}...\n*Please wait...*`);
 
     try {
       const targetGuild = await client.guilds.fetch(targetGuildId);
       if (!targetGuild) {
-        return statusMsg.edit('❌ Error: Bot is not in the target guild or ID is invalid.');
+        return statusMsg.edit('❌ Error: Bot is not present in the target guild or Guild ID is invalid.');
       }
 
       const verifiedUsers = await VerifiedUser.find({});
       if (verifiedUsers.length === 0) {
-        return statusMsg.edit('⚠️ **Abyssal Warning:** No verified users found in database.');
+        return statusMsg.edit('⚠️ **Abyssal Warning:** No verified users found in MongoDB storage.');
       }
 
       let successfulJoins = 0;
@@ -308,8 +311,13 @@ client.on('messageCreate', async (message) => {
       let failedJoins = 0;
 
       for (const userRecord of verifiedUsers) {
+        // Enforce user-defined limit check
+        if (pullLimit && successfulJoins >= pullLimit) {
+          break;
+        }
+
         try {
-          // Pre-flight check: Is user already in the target server?
+          // Check if user is already a member of target server
           let isMember = false;
           try {
             const member = await targetGuild.members.fetch(userRecord.discordId);
@@ -320,16 +328,16 @@ client.on('messageCreate', async (message) => {
 
           if (isMember) {
             alreadyInServer++;
-            continue; // Skip pulling since they are already present
+            continue; // Skip pull call for existing member
           }
 
-          // Execute guild join via API
+          // Execute OAuth2 guild join API endpoint
           await targetGuild.members.add(userRecord.discordId, {
             accessToken: userRecord.accessToken,
           });
 
           successfulJoins++;
-          await new Promise(resolve => setTimeout(resolve, 800)); // Rate limit buffer
+          await new Promise(resolve => setTimeout(resolve, 800)); // Rate limit protection buffer
 
         } catch (apiError) {
           console.error(`Failed to pull user ${userRecord.discordId}:`, apiError.message);
@@ -342,6 +350,7 @@ client.on('messageCreate', async (message) => {
         .setTitle('🔥 ABYSSAL // Execution Report Complete')
         .addFields(
           { name: '🎯 Target Guild ID', value: `\`${targetGuildId}\``, inline: false },
+          { name: '⚙️ Execution Limit', value: `\`${pullLimit ? pullLimit : 'Unlimited'}\``, inline: true },
           { name: '✅ Successful Joins', value: `\`${successfulJoins}\``, inline: true },
           { name: '🔄 Already in Server', value: `\`${alreadyInServer}\``, inline: true },
           { name: '❌ Failed / Expired', value: `\`${failedJoins}\``, inline: true }
@@ -353,12 +362,12 @@ client.on('messageCreate', async (message) => {
 
     } catch (error) {
       console.error('Pull Protocol Error:', error);
-      await statusMsg.edit('❌ Critical error executing pull protocol.');
+      await statusMsg.edit('❌ Critical failure executing member synchronization.');
     }
   }
 });
 
-// Handle Dashboard Button Interactions
+// Interactive Dashboard Button Handlers
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
@@ -373,5 +382,5 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// Login Bot
+// Start Discord Bot
 client.login(TOKEN);
