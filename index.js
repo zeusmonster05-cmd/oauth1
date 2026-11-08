@@ -47,17 +47,16 @@ const userSchema = new mongoose.Schema({
 }, { collection: 'verifiedusers' });
 const VerifiedUser = mongoose.model('VerifiedUser', userSchema);
 
-// User Credit Balances Collection
+// User Credit Balances Collection (Streamlined to offline only)
 const creditSchema = new mongoose.Schema({
   discordId: { type: String, required: true, unique: true },
-  offline: { type: Number, default: 0 },
-  online: { type: Number, default: 0 },
-  reaction: { type: Number, default: 0 }
+  offline: { type: Number, default: 0 }
 }, { collection: 'usercredits' });
 const UserCredit = mongoose.model('UserCredit', creditSchema);
 
-// Active interactive sessions map
+// Active interactive sessions & Cooldown maps
 const activeSessions = new Map();
+const pullCooldowns = new Map();
 
 // ==================== EXPRESS WEB SERVER SETUP ====================
 const app = express();
@@ -192,7 +191,7 @@ setInterval(async () => {
   try {
     const users = await VerifiedUser.find({});
     for (const user of users) {
-      if (user.expiresAt < new Date(Date.now() + 86400000)) { // Refresh if expiring within 24h
+      if (user.expiresAt < new Date(Date.now() + 86400000)) {
         try {
           const res = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
             client_id: CLIENT_ID, client_secret: CLIENT_SECRET, grant_type: 'refresh_token', refresh_token: user.refreshToken
@@ -206,7 +205,7 @@ setInterval(async () => {
       }
     }
   } catch (err) {}
-}, 3600000); // Check every hour
+}, 3600000);
 
 // ==================== BOT COMMANDS ====================
 client.on('messageCreate', async (message) => {
@@ -218,7 +217,7 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // 1. !panel command -> Sends the Purchase Ticket Embed & Buttons[cite: 14, 15]
+  // 1. !panel command -> Sends Purchase Ticket panel with Banner Image[cite: 14, 15]
   if (command === 'panel') {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('❌ Access Denied: Administrator permissions required.');
@@ -227,7 +226,8 @@ client.on('messageCreate', async (message) => {
     const embed = new EmbedBuilder()
       .setColor(0x7000ff)
       .setTitle('Member Purchase Ticket 👥')
-      .setDescription('You must buy credits before purchasing members. After buying credits, press **Add Members** to start adding members to your server.\nFast and high-quality service to ensure your satisfaction ❤️.');
+      .setDescription('You must buy credits before purchasing members. After buying credits, press **Add Members** to start adding members to your server.\nFast and high-quality service to ensure your satisfaction ❤️.')
+      .setImage('https://cdn.discordapp.com/attachments/1461334968423940250/1568896573084008469/banner.png'); // Embedded user image
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel('Buy Credits').setStyle(ButtonStyle.Link).setURL(`${PUBLIC_URL}/verify`),
@@ -239,41 +239,121 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   }
 
-  // 2. !gc command -> Admin Credit Distribution (`!gc @user offline 1000`)[cite: 14]
+  // 2. !gc command -> Admin Credit Distribution (Capped strictly at total verified stock)
   if (command === 'gc') {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('❌ Access Denied.');
     }
 
     const targetUser = message.mentions.users.first();
-    const type = args[1]?.toLowerCase();
-    const amount = parseInt(args[2], 10);
+    const amount = parseInt(args[1], 10);
 
-    if (!targetUser || !['offline', 'online', 'reaction'].includes(type) || isNaN(amount)) {
-      return message.reply('❌ Usage: `!gc @user <offline/online/reaction> <amount>`');
+    if (!targetUser || isNaN(amount)) {
+      return message.reply('❌ Usage: `!gc @user <amount>`');
+    }
+
+    const totalStock = await VerifiedUser.countDocuments();
+    if (amount > totalStock) {
+      return message.reply(`❌ Error: You cannot give **${amount}** credits. Maximum available stock in database is **${totalStock}**.`);
     }
 
     let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
     if (!userCredit) {
-      userCredit = new UserCredit({ discordId: targetUser.id, offline: 0, online: 0, reaction: 0 });
+      userCredit = new UserCredit({ discordId: targetUser.id, offline: 0 });
     }
 
-    userCredit[type] += amount;
+    userCredit.offline += amount;
     await userCredit.save();
 
     const embed = new EmbedBuilder()
       .setColor(0x10b981)
       .setTitle('📦 Credits Received!')
-      .setDescription(`🖤 **${amount.toLocaleString()}** ${type} credits have been added to your balance!`)
+      .setDescription(`🖤 **${amount.toLocaleString()}** offline credits have been added to your balance!`)
       .addFields(
-        { name: 'Your Balance:', value: `🟢 Online: \`${userCredit.online}\`\n⚫ Offline: \`${userCredit.offline}\`\n🎉 Reaction: \`${userCredit.reaction}\``, inline: false }
+        { name: 'Your Balance:', value: `⚫ Offline: \`${userCredit.offline}\``, inline: false }
       )
       .setTimestamp();
 
     return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
   }
 
-  // 3. !stats command -> Cyberpunk Neural Telemetry Matrix
+  // 3. !rc command -> Admin Credit Removal (`!rc @user 500`)
+  if (command === 'rc') {
+    if (!message.member.permissions.has('Administrator')) {
+      return message.reply('❌ Access Denied.');
+    }
+
+    const targetUser = message.mentions.users.first();
+    const amount = parseInt(args[1], 10);
+
+    if (!targetUser || isNaN(amount)) {
+      return message.reply('❌ Usage: `!rc @user <amount>`');
+    }
+
+    let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
+    if (!userCredit) {
+      userCredit = new UserCredit({ discordId: targetUser.id, offline: 0 });
+    }
+
+    userCredit.offline = Math.max(0, userCredit.offline - amount);
+    await userCredit.save();
+
+    const embed = new EmbedBuilder()
+      .setColor(0xef4444)
+      .setTitle('🔻 Credits Deducted')
+      .setDescription(`🖤 **${amount.toLocaleString()}** offline credits have been removed from your balance!`)
+      .addFields(
+        { name: 'Your Balance:', value: `⚫ Offline: \`${userCredit.offline}\``, inline: false }
+      )
+      .setTimestamp();
+
+    return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
+  }
+
+  // 4. !resetcredits command -> Wipe user balance entirely
+  if (command === 'resetcredits') {
+    if (!message.member.permissions.has('Administrator')) return message.reply('❌ Access Denied.');
+    const targetUser = message.mentions.users.first();
+    if (!targetUser) return message.reply('❌ Usage: `!resetcredits @user`');
+
+    await UserCredit.findOneAndUpdate({ discordId: targetUser.id }, { offline: 0 }, { upsert: true });
+    return message.reply(`✨ Successfully wiped all credits for <@${targetUser.id}>.`);
+  }
+
+  // 5. !bal command -> Check Balance (`!bal @user`)
+  if (command === 'bal' || command === 'balance') {
+    const targetUser = message.mentions.users.first() || message.author;
+    let uc = await UserCredit.findOne({ discordId: targetUser.id });
+    if (!uc) uc = { offline: 0 };
+
+    const embed = new EmbedBuilder()
+      .setColor(0x38bdf8)
+      .setTitle(`💳 Balance for ${targetUser.username}`)
+      .addFields(
+        { name: '⚫ Offline Credits', value: `\`${uc.offline}\``, inline: true }
+      )
+      .setTimestamp();
+
+    return message.reply({ embeds: [embed] });
+  }
+
+  // 6. !stock command -> Check Stock
+  if (command === 'stock') {
+    const totalStock = await VerifiedUser.countDocuments();
+    const embed = new EmbedBuilder()
+      .setColor(0x8b5cf6)
+      .setTitle('📦 Database Stock Overview')
+      .addFields(
+        { name: '⚫ Offline Accounts Stock', value: `\`${totalStock}\``, inline: true },
+        { name: '⚡ System Status', value: '`ONLINE // READY`', inline: false }
+      )
+      .setFooter({ text: 'Abyssal Inventory Engine' })
+      .setTimestamp();
+
+    return message.reply({ embeds: [embed] });
+  }
+
+  // 7. !stats command -> Cyberpunk Neural Telemetry Matrix
   if (command === 'stats') {
     const totalUsers = await VerifiedUser.countDocuments();
     const uptimeMs = Date.now() - startTime;
@@ -316,19 +396,17 @@ client.on('messageCreate', async (message) => {
 
 // ==================== INTERACTIVE BUTTONS & MODALS FLOW ====================
 client.on('interactionCreate', async (interaction) => {
-  // 1. Button Clicks
   if (interaction.isButton()) {
     if (interaction.customId === 'btn_my_credits') {
       let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-      if (!uc) uc = { online: 0, offline: 0, reaction: 0 };
+      if (!uc) uc = { offline: 0 };
       return interaction.reply({
-        content: `💳 **Your Balance:**\n🟢 Online: \`${uc.online}\`\n⚫ Offline: \`${uc.offline}\`\n🎉 Reaction: \`${uc.reaction}\``,
+        content: `💳 **Your Balance:**\n⚫ Offline: \`${uc.offline}\``,
         ephemeral: true
       });
     }
 
     if (interaction.customId === 'btn_add_members') {
-      // Open Modal to input Server ID[cite: 5, 16]
       const modal = new ModalBuilder()
         .setCustomId('modal_server_id')
         .setTitle('Scan');
@@ -348,6 +426,16 @@ client.on('interactionCreate', async (interaction) => {
       const session = activeSessions.get(interaction.user.id);
       if (!session) return interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true });
 
+      // Check User Credit Balance before running execution
+      let uc = await UserCredit.findOne({ discordId: interaction.user.id });
+      if (!uc || uc.offline < session.quantity) {
+        return interaction.update({ content: '❌ Insufficient offline credits to complete this purchase.', embeds: [], components: [] });
+      }
+
+      // Deduct Credits
+      uc.offline -= session.quantity;
+      await uc.save();
+
       await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${session.opId}\``, components: [] });
 
       try {
@@ -360,7 +448,7 @@ client.on('interactionCreate', async (interaction) => {
           if (successful >= session.quantity) break;
           try {
             const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
-            if (member) continue; // Skip if already in server
+            if (member) continue;
 
             await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
             successful++;
@@ -380,7 +468,7 @@ client.on('interactionCreate', async (interaction) => {
           .setTitle('✅ Members added successfully!')
           .addFields(
             { name: '📊 Accounts Added', value: `\`${successful} accounts\``, inline: true },
-            { name: '🏷️ Account Type', value: `\`${session.tokenType}\``, inline: true },
+            { name: '🏷️ Account Type', value: '`offline`', inline: true },
             { name: '⏱️ Time Taken', value: `\`${timeTaken}s\``, inline: true }
           )
           .setTimestamp();
@@ -399,23 +487,28 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // 2. Modal Submissions
+  // Modal Submissions
   if (interaction.isModalSubmit()) {
     if (interaction.customId === 'modal_server_id') {
       const serverId = interaction.fields.getTextInputValue('input_server_id');
-      activeSessions.set(interaction.user.id, { serverId });
+      activeSessions.set(interaction.user.id, { serverId, tokenType: 'offline' });
 
-      // Show Token Type Select Menu[cite: 6, 17]
-      const selectMenu = new StringSelectMenuBuilder()
-        .setCustomId('select_token_type')
-        .setPlaceholder('Select token type')
-        .addOptions(
-          new StringSelectMenuOptionBuilder().setLabel('offline').setDescription('Stock available in database').setValue('offline'),
-          new StringSelectMenuOptionBuilder().setLabel('online').setDescription('Active tokens').setValue('online')
-        );
+      const totalStock = await VerifiedUser.countDocuments();
 
-      const row = new ActionRowBuilder().addComponents(selectMenu);
-      return interaction.reply({ content: `Please select the token type you want to buy`, components: [row], ephemeral: true });
+      // Automatically jump straight to quantity modal since type is locked to offline
+      const modal = new ModalBuilder()
+        .setCustomId('modal_quantity')
+        .setTitle('Buy Members');
+
+      const qtyInput = new TextInputBuilder()
+        .setCustomId('input_quantity')
+        .setLabel('Quantity')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder(`Stock : ${totalStock}`)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
+      return interaction.showModal(modal);
     }
 
     if (interaction.customId === 'modal_quantity') {
@@ -427,23 +520,26 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '❌ Invalid quantity entered.', ephemeral: true });
       }
 
+      let uc = await UserCredit.findOne({ discordId: interaction.user.id });
+      const userBalance = uc ? uc.offline : 0;
+
+      if (quantity > userBalance) {
+        return interaction.reply({ content: `❌ Error: You requested **${quantity}** members, but your balance is only **${userBalance}** credits.`, ephemeral: true });
+      }
+
       session.quantity = quantity;
       session.opId = `OP-${Math.random().toString(36).substring(2, 10).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
 
       const totalStock = await VerifiedUser.countDocuments();
-      let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-      const userBalance = uc ? uc[session.tokenType] : 0;
-
       let guildName = 'Unknown Guild';
       try {
         const g = await client.guilds.fetch(session.serverId);
         guildName = g.name;
       } catch (e) {}
 
-      // Confirmation Embed[cite: 9]
       const confirmEmbed = new EmbedBuilder()
         .setColor(0x10b981)
-        .setTitle(`Confirm Addition — ${session.tokenType}`)
+        .setTitle(`Confirm Addition — offline`)
         .addFields(
           { name: '🏰 Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
           { name: '👥 Current Members', value: '0', inline: true },
@@ -458,33 +554,7 @@ client.on('interactionCreate', async (interaction) => {
         new ButtonBuilder().setCustomId('btn_cancel_purchase').setLabel('Cancel').setStyle(ButtonStyle.Danger)
       );
 
-      return interaction.update({ content: null, embeds: [confirmEmbed], components: [row] });
-    }
-  }
-
-  // 3. String Select Menu Selections
-  if (interaction.isStringSelectMenu()) {
-    if (interaction.customId === 'select_token_type') {
-      const tokenType = interaction.values[0];
-      const session = activeSessions.get(interaction.user.id);
-      session.tokenType = tokenType;
-
-      const totalStock = await VerifiedUser.countDocuments();
-
-      // Open Quantity Modal[cite: 8, 18]
-      const modal = new ModalBuilder()
-        .setCustomId('modal_quantity')
-        .setTitle('Buy Members');
-
-      const qtyInput = new TextInputBuilder()
-        .setCustomId('input_quantity')
-        .setLabel('Quantity')
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder(`Stock : ${totalStock}`)
-        .setRequired(true);
-
-      modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
-      return interaction.showModal(modal);
+      return interaction.reply({ embeds: [confirmEmbed], components: [row], ephemeral: true });
     }
   }
 });
