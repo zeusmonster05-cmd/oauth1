@@ -22,7 +22,7 @@ const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
 const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
 const MONGO_URI = process.env.MONGO_URI;
 
-// Your exact exclusive owner Discord ID
+// Exclusive Owner ID
 const OWNER_ID = '1370594462941581433';
 
 // Direct CDN Image URL for Panel & Verify embeds
@@ -258,7 +258,7 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   }
 
-  // 3. !gc command -> OWNER ONLY (Strictly your ID: 1370594462941581433)
+  // 3. !gc command -> OWNER ONLY
   if (command === 'gc') {
     if (message.author.id !== OWNER_ID) {
       return message.reply('❌ Access Denied: Only the bot owner can issue credits.');
@@ -340,7 +340,7 @@ client.on('messageCreate', async (message) => {
     return message.reply(`✨ Successfully wiped all credits for <@${targetUser.id}>.`);
   }
 
-  // 6. !pull command -> OWNER ONLY (The classic manual direct pull command)
+  // 6. !pull command -> OWNER ONLY
   if (command === 'pull') {
     if (message.author.id !== OWNER_ID) {
       return message.reply('❌ Access Denied: Only the bot owner can run manual pull protocols.');
@@ -478,6 +478,7 @@ client.on('messageCreate', async (message) => {
 
 // ==================== INTERACTIVE BUTTONS & MODALS FLOW ====================
 client.on('interactionCreate', async (interaction) => {
+  // 1. Button Clicks
   if (interaction.isButton()) {
     if (interaction.customId === 'btn_my_credits') {
       let uc = await UserCredit.findOne({ discordId: interaction.user.id });
@@ -513,6 +514,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.update({ content: `❌ Insufficient credits. You need **${session.quantity}** credits, but your balance is **${uc ? uc.balance : 0}**.`, embeds: [], components: [] });
       }
 
+      // Deduct Credits from user balance immediately
       uc.balance -= session.quantity;
       await uc.save();
 
@@ -567,7 +569,7 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // Modal Submissions
+  // 2. Modal Submissions (FIXED: Acknowledging inputs immediately)
   if (interaction.isModalSubmit()) {
     if (interaction.customId === 'modal_server_id') {
       const serverId = interaction.fields.getTextInputValue('input_server_id');
@@ -595,6 +597,10 @@ client.on('interactionCreate', async (interaction) => {
       const quantity = parseInt(qtyStr, 10);
       const session = activeSessions.get(interaction.user.id);
 
+      if (!session) {
+        return interaction.reply({ content: '❌ Session expired. Please click Add Members again.', ephemeral: true });
+      }
+
       if (isNaN(quantity) || quantity <= 0) {
         return interaction.reply({ content: '❌ Invalid quantity entered.', ephemeral: true });
       }
@@ -621,7 +627,7 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle(`Confirm Addition — Member Sync`)
         .addFields(
           { name: '🏰 Target Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
-          { name: '📦 Available DB Stock', value: `${totalStock}`, inline: true },
+          { name: '📦 Available Stock', value: `${totalStock}`, inline: true },
           { name: '🔢 Add Count', value: `${quantity}`, inline: true },
           { name: '💵 Cost', value: `${quantity} Credits`, inline: true },
           { name: '💳 Your Balance', value: `${userBalance} Credits`, inline: true }
