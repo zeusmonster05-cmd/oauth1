@@ -7,7 +7,9 @@ const {
   ButtonStyle, 
   ModalBuilder, 
   TextInputBuilder, 
-  TextInputStyle 
+  TextInputStyle, 
+  StringSelectMenuBuilder, 
+  StringSelectMenuOptionBuilder 
 } = require('discord.js');
 const express = require('express');
 const mongoose = require('mongoose');
@@ -490,6 +492,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.customId === 'btn_add_members') {
+      // Step 1: Open Server ID Modal (Punisher Style)
       const modal = new ModalBuilder()
         .setCustomId('modal_server_id')
         .setTitle('Scan');
@@ -505,6 +508,11 @@ client.on('interactionCreate', async (interaction) => {
       return await interaction.showModal(modal);
     }
 
+    if (interaction.customId === 'workflow_cancel') {
+      activeSessions.delete(interaction.user.id);
+      return interaction.update({ content: '❌ Operation cancelled.', embeds: [], components: [] });
+    }
+
     if (interaction.customId === 'btn_confirm_purchase') {
       const session = activeSessions.get(interaction.user.id);
       if (!session) return interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true });
@@ -514,11 +522,12 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.update({ content: `❌ Insufficient credits. You need **${session.quantity}** credits, but your balance is **${uc ? uc.balance : 0}**.`, embeds: [], components: [] });
       }
 
-      // Deduct Credits from user balance immediately
+      // Deduct Credits
       uc.balance -= session.quantity;
       await uc.save();
 
-      await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${session.opId}\``, components: [] });
+      // Loading Screen / Live Progress Ticker
+      await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${session.opId}\``, embeds: [], components: [] });
 
       try {
         const targetGuild = await client.guilds.fetch(session.serverId);
@@ -569,7 +578,7 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // 2. Modal Submissions (FIXED: Acknowledging inputs immediately)
+  // 2. Modal Submissions
   if (interaction.isModalSubmit()) {
     if (interaction.customId === 'modal_server_id') {
       const serverId = interaction.fields.getTextInputValue('input_server_id');
@@ -577,19 +586,27 @@ client.on('interactionCreate', async (interaction) => {
 
       const totalStock = await VerifiedUser.countDocuments();
 
-      const modal = new ModalBuilder()
-        .setCustomId('modal_quantity')
-        .setTitle('Buy Members');
+      // Step 2: Send Token Type Selector Menu & Cancel Button (Punisher Style)
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId('select_token_type')
+        .setPlaceholder('Select token type')
+        .addOptions(
+          new StringSelectMenuOptionBuilder()
+            .setLabel('offline')
+            .setDescription(`1000/${totalStock}`)
+            .setValue('offline')
+        );
 
-      const qtyInput = new TextInputBuilder()
-        .setCustomId('input_quantity')
-        .setLabel('Quantity')
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder(`Stock : ${totalStock}`)
-        .setRequired(true);
+      const row1 = new ActionRowBuilder().addComponents(selectMenu);
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('workflow_cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger)
+      );
 
-      modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
-      return await interaction.showModal(modal);
+      return interaction.reply({ 
+        content: `Please select the token type you want to buy`, 
+        components: [row1, row2], 
+        ephemeral: true 
+      });
     }
 
     if (interaction.customId === 'modal_quantity') {
@@ -622,15 +639,17 @@ client.on('interactionCreate', async (interaction) => {
         guildName = g.name;
       } catch (e) {}
 
+      // Step 4: Confirmation Embed with Purchase / Cancel buttons
       const confirmEmbed = new EmbedBuilder()
         .setColor(0x10b981)
-        .setTitle(`Confirm Addition — Member Sync`)
+        .setTitle(`Confirm Addition — ${session.tokenType}`)
         .addFields(
-          { name: '🏰 Target Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
-          { name: '📦 Available Stock', value: `${totalStock}`, inline: true },
+          { name: '🏰 Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
+          { name: '👥 Current Members', value: '0', inline: true },
+          { name: '📦 Available Accounts', value: `${totalStock}`, inline: true },
           { name: '🔢 Add Count', value: `${quantity}`, inline: true },
-          { name: '💵 Cost', value: `${quantity} Credits`, inline: true },
-          { name: '💳 Your Balance', value: `${userBalance} Credits`, inline: true }
+          { name: '💵 Cost', value: `${quantity} 📦`, inline: true },
+          { name: '💳 Your Balance', value: `${userBalance} 📦`, inline: true }
         );
 
       const row = new ActionRowBuilder().addComponents(
@@ -639,6 +658,33 @@ client.on('interactionCreate', async (interaction) => {
       );
 
       return interaction.reply({ embeds: [confirmEmbed], components: [row], ephemeral: true });
+    }
+  }
+
+  // 3. String Select Menu (Token Type Selection -> Opens Quantity Modal)
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'select_token_type') {
+      const tokenType = interaction.values[0];
+      const session = activeSessions.get(interaction.user.id);
+      if (!session) return interaction.reply({ content: '❌ Session expired.', ephemeral: true });
+
+      session.tokenType = tokenType;
+      const totalStock = await VerifiedUser.countDocuments();
+
+      // Step 3: Open Quantity Modal (Punisher Style)
+      const modal = new ModalBuilder()
+        .setCustomId('modal_quantity')
+        .setTitle('Buy Members');
+
+      const qtyInput = new TextInputBuilder()
+        .setCustomId('input_quantity')
+        .setLabel('Quantity')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder(`Stock : ${totalStock}`)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
+      return await interaction.showModal(modal);
     }
   }
 });
