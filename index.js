@@ -9,7 +9,9 @@ const {
   TextInputBuilder, 
   TextInputStyle, 
   StringSelectMenuBuilder, 
-  StringSelectMenuOptionBuilder 
+  StringSelectMenuOptionBuilder,
+  PermissionFlagsBits,
+  ChannelType
 } = require('discord.js');
 const express = require('express');
 const mongoose = require('mongoose');
@@ -24,7 +26,7 @@ const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
 const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
 const MONGO_URI = process.env.MONGO_URI;
 
-// Exclusive Owner ID
+// Exclusive Owner ID (Navya Sharma / Zeus)
 const OWNER_ID = '1370594462941581433';
 
 // Direct CDN Image URL for Panel & Verify embeds
@@ -238,20 +240,20 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed], components: [row] });
   }
 
-  // 2. !panel command
+  // 2. !panel command -> OWNER ONLY (Strictly restricted to OWNER_ID)
   if (command === 'panel') {
-    if (!message.member.permissions.has('Administrator')) {
-      return message.reply('❌ Access Denied: Administrator permissions required.');
+    if (message.author.id !== OWNER_ID) {
+      return message.reply('❌ Access Denied: Only the bot owner can deploy the purchase panel.');
     }
 
     const embed = new EmbedBuilder()
       .setColor(0x7000ff)
       .setTitle('Member Purchase Ticket 👥')
-      .setDescription('You must buy credits before purchasing members. After buying credits, press **Add Members** to start adding members to your server.\nFast and high-quality service to ensure your satisfaction ❤️.')
+      .setDescription('You must buy credits before purchasing members. Click **Buy Credits** to open a private ticket with the owner, or press **Add Members** to send members to your server.\nFast and high-quality service to ensure your satisfaction ❤️.')
       .setImage(BANNER_IMAGE_URL);
 
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel('Buy Credits').setStyle(ButtonStyle.Link).setURL(`${PUBLIC_URL}/verify`),
+      new ButtonBuilder().setCustomId('btn_buy_credits_ticket').setLabel('Buy Credits').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('btn_my_credits').setLabel('My Credits').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('btn_add_members').setLabel('Add Members').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setLabel('Add Bot').setStyle(ButtonStyle.Link).setURL(`https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&permissions=8&scope=bot`)
@@ -404,7 +406,32 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // 7. !bal command
+  // 7. !broadcast command -> OWNER ONLY
+  if (command === 'broadcast') {
+    if (message.author.id !== OWNER_ID) return message.reply('❌ Access Denied.');
+    const broadcastText = args.join(' ');
+    if (!broadcastText) return message.reply('❌ Usage: `!broadcast <message>`');
+
+    const embed = new EmbedBuilder()
+      .setColor(0x7000ff)
+      .setTitle('📢 ABYSSAL // Network Broadcast')
+      .setDescription(broadcastText)
+      .setFooter({ text: 'Official Announcement' })
+      .setTimestamp();
+
+    let count = 0;
+    client.guilds.cache.forEach(guild => {
+      const defaultChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages));
+      if (defaultChannel) {
+        defaultChannel.send({ embeds: [embed] }).catch(() => {});
+        count++;
+      }
+    });
+
+    return message.reply(`📡 Broadcast sent to **${count}** server channels.`);
+  }
+
+  // 8. !bal command
   if (command === 'bal' || command === 'balance') {
     const targetUser = message.mentions.users.first() || message.author;
     let uc = await UserCredit.findOne({ discordId: targetUser.id });
@@ -421,7 +448,7 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed] });
   }
 
-  // 8. !stock command
+  // 9. !stock command
   if (command === 'stock') {
     const totalStock = await VerifiedUser.countDocuments();
     const embed = new EmbedBuilder()
@@ -437,7 +464,7 @@ client.on('messageCreate', async (message) => {
     return message.reply({ embeds: [embed] });
   }
 
-  // 9. !stats command
+  // 10. !stats command
   if (command === 'stats') {
     const totalUsers = await VerifiedUser.countDocuments();
     const uptimeMs = Date.now() - startTime;
@@ -482,6 +509,58 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
   // 1. Button Clicks
   if (interaction.isButton()) {
+    // TICKET SYSTEM: BUY CREDITS
+    if (interaction.customId === 'btn_buy_credits_ticket') {
+      const channelName = `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+      const existingChannel = interaction.guild.channels.cache.find(c => c.name === channelName);
+
+      if (existingChannel) {
+        return interaction.reply({ content: `❌ You already have an open ticket: ${existingChannel}`, ephemeral: true });
+      }
+
+      try {
+        const ticketChannel = await interaction.guild.channels.create({
+          name: channelName,
+          type: ChannelType.GuildText,
+          permissionOverwrites: [
+            {
+              id: interaction.guild.roles.everyone.id,
+              deny: [PermissionFlagsBits.ViewChannel],
+            },
+            {
+              id: interaction.user.id,
+              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles],
+            },
+            {
+              id: OWNER_ID,
+              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels],
+            },
+          ],
+        });
+
+        const ticketEmbed = new EmbedBuilder()
+          .setColor(0x7000ff)
+          .setTitle('🎫 Credit Purchase Ticket')
+          .setDescription(`Welcome <@${interaction.user.id}>!\n\nThis is your private ticket channel with the bot owner (<@${OWNER_ID}>).\nState how many credits you wish to purchase. The owner will assist you shortly.`)
+          .setTimestamp();
+
+        const closeRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('btn_close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger)
+        );
+
+        await ticketChannel.send({ content: `<@${interaction.user.id}> | <@${OWNER_ID}>`, embeds: [ticketEmbed], components: [closeRow] });
+        return interaction.reply({ content: `✅ Ticket created successfully: ${ticketChannel}`, ephemeral: true });
+      } catch (err) {
+        return interaction.reply({ content: '❌ Failed to create ticket channel. Ensure bot has Manage Channels permission.', ephemeral: true });
+      }
+    }
+
+    if (interaction.customId === 'btn_close_ticket') {
+      await interaction.reply('🔒 Closing ticket in 3 seconds...');
+      setTimeout(() => interaction.channel.delete().catch(() => {}), 3000);
+      return;
+    }
+
     if (interaction.customId === 'btn_my_credits') {
       let uc = await UserCredit.findOne({ discordId: interaction.user.id });
       if (!uc) uc = { balance: 0 };
@@ -492,7 +571,6 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.customId === 'btn_add_members') {
-      // Step 1: Open Server ID Modal (Punisher Style)
       const modal = new ModalBuilder()
         .setCustomId('modal_server_id')
         .setTitle('Scan');
@@ -522,11 +600,9 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.update({ content: `❌ Insufficient credits. You need **${session.quantity}** credits, but your balance is **${uc ? uc.balance : 0}**.`, embeds: [], components: [] });
       }
 
-      // Deduct Credits
       uc.balance -= session.quantity;
       await uc.save();
 
-      // Loading Screen / Live Progress Ticker
       await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${session.opId}\``, embeds: [], components: [] });
 
       try {
@@ -586,7 +662,6 @@ client.on('interactionCreate', async (interaction) => {
 
       const totalStock = await VerifiedUser.countDocuments();
 
-      // Step 2: Send Token Type Selector Menu & Cancel Button (Punisher Style)
       const selectMenu = new StringSelectMenuBuilder()
         .setCustomId('select_token_type')
         .setPlaceholder('Select token type')
@@ -639,7 +714,6 @@ client.on('interactionCreate', async (interaction) => {
         guildName = g.name;
       } catch (e) {}
 
-      // Step 4: Confirmation Embed with Purchase / Cancel buttons
       const confirmEmbed = new EmbedBuilder()
         .setColor(0x10b981)
         .setTitle(`Confirm Addition — ${session.tokenType}`)
@@ -661,7 +735,7 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // 3. String Select Menu (Token Type Selection -> Opens Quantity Modal)
+  // 3. String Select Menu
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === 'select_token_type') {
       const tokenType = interaction.values[0];
@@ -671,7 +745,6 @@ client.on('interactionCreate', async (interaction) => {
       session.tokenType = tokenType;
       const totalStock = await VerifiedUser.countDocuments();
 
-      // Step 3: Open Quantity Modal (Punisher Style)
       const modal = new ModalBuilder()
         .setCustomId('modal_quantity')
         .setTitle('Buy Members');
