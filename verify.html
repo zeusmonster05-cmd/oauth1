@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CYBERPULSE // Neural Verification Gateway</title>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #04050a;
+      background-image: 
+        radial-gradient(circle at 50% 20%, rgba(112, 0, 255, 0.2), transparent 60%),
+        linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 100% 100%, 30px 30px, 30px 30px;
+      color: #e2e8f0; font-family: 'Rajdhani', sans-serif;
+      min-height: 100vh; display: flex; align-items: center; justify-content: center; overflow: hidden;
+    }
+    .container { width: 100%; max-width: 440px; padding: 20px; position: relative; }
+    .card {
+      background: rgba(13, 14, 24, 0.85); border: 1px solid rgba(139, 92, 246, 0.4);
+      border-radius: 16px; padding: 45px 35px; text-align: center; backdrop-filter: blur(16px);
+      box-shadow: 0 0 50px rgba(112, 0, 255, 0.25), inset 0 0 20px rgba(139, 92, 246, 0.1);
+      position: relative; overflow: hidden;
+    }
+    .card::before {
+      content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 2px;
+      background: linear-gradient(90deg, transparent, #38bdf8, transparent);
+      animation: scanLine 3s linear infinite;
+    }
+    @keyframes scanLine { 0% { left: -100%; } 100% { left: 100%; } }
+
+    .brand { font-family: 'Orbitron', sans-serif; font-size: 0.75rem; letter-spacing: 4px; color: #a78bfa; text-transform: uppercase; margin-bottom: 8px; }
+    .title {
+      font-family: 'Orbitron', sans-serif; font-size: 1.5rem; font-weight: 800; letter-spacing: 2px;
+      background: linear-gradient(135deg, #ffffff 0%, #38bdf8 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 25px; text-transform: uppercase;
+    }
+    
+    /* Futuristic Spinner */
+    .loader-box { position: relative; width: 80px; height: 80px; margin: 0 auto 30px; }
+    .spinner-ring {
+      position: absolute; width: 100%; height: 100%; border: 3px solid rgba(139, 92, 246, 0.15);
+      border-top: 3px solid #10b981; border-radius: 50%; animation: spin 1.2s cubic-bezier(0.68, -0.55, 0.265, 1.55) infinite;
+    }
+    .spinner-core {
+      position: absolute; top: 20px; left: 20px; width: 40px; height: 40px; background: rgba(16, 185, 129, 0.1);
+      border: 1px dashed #38bdf8; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      animation: pulseCore 2s infinite ease-in-out;
+    }
+    .spinner-core svg { width: 20px; height: 20px; stroke: #38bdf8; stroke-width: 2.5; fill: none; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    @keyframes pulseCore { 0%, 100% { transform: scale(0.95); opacity: 0.8; } 50% { transform: scale(1.05); opacity: 1; } }
+
+    .status-box { background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 10px; padding: 14px; margin-bottom: 25px; }
+    .status-label { font-family: 'Orbitron', sans-serif; font-size: 0.7rem; color: #38bdf8; letter-spacing: 2px; margin-bottom: 4px; }
+    .status-desc { font-size: 0.95rem; color: #94a3b8; font-weight: 500; }
+
+    .btn {
+      display: none; width: 100%; padding: 14px; font-family: 'Orbitron', sans-serif; font-size: 0.85rem; font-weight: 700; letter-spacing: 2px;
+      color: #ffffff; background: linear-gradient(135deg, #6366f1 0%, #3b82f6 100%);
+      border: none; border-radius: 8px; cursor: pointer; text-decoration: none; box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4); transition: all 0.2s ease;
+    }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 25px rgba(99, 102, 241, 0.6); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="brand">CyberPulse Security</div>
+      <h1 class="title">Neural Verification</h1>
+      
+      <div class="loader-box">
+        <div class="spinner-ring"></div>
+        <div class="spinner-core">
+          <svg viewBox="0 0 24 24"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4m-4.93-7.07l-2.83 2.83m-8.48 8.48l-2.83 2.83"/></svg>
+        </div>
+      </div>
+
+      <div class="status-box">
+        <div class="status-label">SYSTEM TELEMETRY</div>
+        <div class="status-desc" id="loadingText">Initializing encrypted handshake...</div>
+      </div>
+
+      <!-- Button appears if redirect takes a moment, or click manually -->
+      <a href="#" id="authBtn" class="btn">AUTHORIZE DISCORD 🔐</a>
+    </div>
+  </div>
+
+  <script>
+    // Replace this with your actual Discord OAuth2 authorize URL or let your server router handle it
+    const discordOAuthUrl = "https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&redirect_uri=YOUR_REDIRECT_URI&response_type=code&scope=identify%20guilds.join";
+
+    const loadingStages = [
+      { text: "Scanning security protocols...", time: 800 },
+      { text: "Verifying encrypted neural signature...", time: 1600 },
+      { text: "Establishing secure gateway session...", time: 2400 },
+      { text: "Redirecting to Discord Authorization...", time: 3200 }
+    ];
+
+    const textEl = document.getElementById('loadingText');
+    const btnEl = document.getElementById('authBtn');
+    btnEl.href = discordOAuthUrl;
+
+    loadingStages.forEach(stage => {
+      setTimeout(() => {
+        textEl.innerText = stage.text;
+      }, stage.time);
+    });
+
+    // Auto redirect after full sequence
+    setTimeout(() => {
+      window.location.href = discordOAuthUrl;
+    }, 3800);
+
+    // Fallback button display if popup blocked
+    setTimeout(() => {
+      btnEl.style.display = 'block';
+    }, 4500);
+  </script>
+</body>
+</html>
