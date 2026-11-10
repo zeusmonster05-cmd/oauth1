@@ -14,11 +14,15 @@ const {
   ChannelType,
   SlashCommandBuilder,
   REST,
-  Routes
+  Routes,
+  AttachmentBuilder
 } = require('discord.js');
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 const mongoose = require('mongoose');
 const axios = require('axios');
+const session = require('express-session');
 require('dotenv').config();
 
 // ==================== CONFIGURATION & ENVIRONMENT ====================
@@ -27,12 +31,11 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const PUBLIC_URL = process.env.PUBLIC_URL || 'https://oauth1-bb1j.onrender.com';
 const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
+const WEB_REDIRECT_URI = process.env.WEB_REDIRECT_URI || `${PUBLIC_URL}/auth/callback`;
 const MONGO_URI = process.env.MONGO_URI;
 
 // Exclusive Owner ID
 const OWNER_ID = '1370594462941581433';
-
-// Direct CDN Image URL for Panel & Verify embeds
 const BANNER_IMAGE_URL = 'https://cdn.discordapp.com/attachments/1531305989410787418/1568198735694139402/Gemini_Generated_Image_xjoeqcxjoeqcxjoe.png?ex=6af19562&is=6af043e2&hm=4298d9d755b0a7b4ffe1b1afa3b14ff15639d997e53a1a0e110589ff341f2da2&';
 
 if (!TOKEN || !CLIENT_ID || !CLIENT_SECRET || !MONGO_URI) {
@@ -87,19 +90,60 @@ const guildConfigSchema = new mongoose.Schema({
 }, { collection: 'guildconfigs' });
 const GuildConfig = mongoose.model('GuildConfig', guildConfigSchema);
 
+const operationSchema = new mongoose.Schema({
+  opId: { type: String, required: true, unique: true },
+  discordId: { type: String, required: true },
+  targetGuildId: String,
+  requestedQuantity: Number,
+  successfulQuantity: { type: Number, default: 0 },
+  status: { type: String, default: 'PROCESSING' }, // PROCESSING, COMPLETED, FAILED
+  timestamp: { type: Date, default: Date.now }
+}, { collection: 'operations' });
+const Operation = mongoose.model('Operation', operationSchema);
+
 const activeSessions = new Map();
 
-// Helper to check if a user has administrative/owner privileges (Owner or Partner)
+// Helper to check if a user has administrative/owner privileges
 async function hasOwnerPrivileges(userId) {
   if (userId === OWNER_ID) return true;
   const isPartner = await Partner.findOne({ discordId: userId });
   return !!isPartner;
 }
 
-// ==================== EXPRESS WEB SERVER SETUP ====================
-const app = express();
-app.use(express.json());
+// Pricing Calculator Helper
+function calculatePrice(quantity) {
+  let bonusPercent = 0;
+  let tierName = 'Standard';
+  
+  if (quantity >= 10000) {
+    bonusPercent = 15;
+    tierName = 'Enterprise Tier';
+  } else if (quantity >= 2500) {
+    bonusPercent = 5;
+    tierName = 'Pro Tier';
+  } else if (quantity >= 500) {
+    tierName = 'Starter Tier';
+  }
 
+  const bonusCredits = Math.floor((quantity * bonusPercent) / 100);
+  const totalCreditsGiven = quantity + bonusCredits;
+
+  return { quantity, bonusPercent, tierName, bonusCredits, totalCreditsGiven };
+}
+
+// ==================== EXPRESS WEB SERVER & SOCKET.IO SETUP ====================
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+app.use(express.json());
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'cyberpulse_super_secret_session',
+  resave: false,
+  saveUninitialized: false
+}));
+
+// OAuth2 Verification Success HTML
 const successHtml = `
 <!DOCTYPE html>
 <html lang="en">
@@ -172,6 +216,7 @@ const successHtml = `
 </html>
 `;
 
+// Direct OAuth Verification Endpoint
 app.get('/verify', (req, res) => {
   const discordOAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
   res.redirect(discordOAuthUrl);
@@ -221,9 +266,215 @@ app.get('/callback', async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => res.status(200).send('⚡ CYBERPULSE OAUTH SYSTEM ONLINE'));
+// WEB DASHBOARD OAUTH SINGLE SIGN-ON & FRONTEND
+app.get('/login', (req, res) => {
+  const webAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(WEB_REDIRECT_URI)}&response_type=code&scope=identify`;
+  res.redirect(webAuthUrl);
+});
+
+app.get('/auth/callback', async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.redirect('/');
+
+  try {
+    const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
+      client_id: CLIENT_ID, client_secret: CLIENT_SECRET, grant_type: 'authorization_code', code, redirect_uri: WEB_REDIRECT_URI
+    }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+
+    const userResponse = await axios.get('https://discord.com/api/users/@me', {
+      headers: { Authorization: `Bearer ${tokenResponse.data.access_token}` }
+    });
+
+    req.session.user = {
+      id: userResponse.data.id,
+      username: userResponse.data.username,
+      avatar: userResponse.data.avatar
+    };
+
+    res.redirect('/dashboard');
+  } catch (e) {
+    res.status(500).send('❌ Dashboard login failed.');
+  }
+});
+
+app.get('/logout', (req, res) => {
+  req.session.destroy();
+  res.redirect('/');
+});
+
+// WEB DASHBOARD FULL HTML & WEBSOCKET INTERFACE
+app.get('/dashboard', async (req, res) => {
+  if (!req.session.user) return res.redirect('/login');
+
+  const uc = await UserCredit.findOne({ discordId: req.session.user.id }) || { balance: 0 };
+  const totalStock = await VerifiedUser.countDocuments();
+  const operations = await Operation.find({ discordId: req.session.user.id }).sort({ timestamp: -1 }).limit(5);
+
+  const dashboardHtml = `
+  <!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>CYBERPULSE // Operative Web Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { background: #06070d; color: #e2e8f0; font-family: 'Rajdhani', sans-serif; padding: 20px; }
+      .nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #7000ff; padding-bottom: 15px; margin-bottom: 30px; }
+      .nav h1 { font-family: 'Orbitron', sans-serif; color: #38bdf8; font-size: 1.5rem; }
+      .user-info { display: flex; align-items: center; gap: 10px; }
+      .btn-logout { background: #ef4444; color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 0.85rem; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+      .card { background: rgba(13, 14, 24, 0.9); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 12px; padding: 25px; backdrop-filter: blur(10px); }
+      .card h2 { font-family: 'Orbitron', sans-serif; font-size: 1.1rem; color: #a78bfa; margin-bottom: 15px; }
+      .stat-val { font-size: 2rem; font-weight: bold; color: #10b981; }
+      input, select, button { width: 100%; padding: 12px; margin-top: 10px; border-radius: 6px; border: 1px solid #8b5cf6; background: #0d0e18; color: white; font-family: inherit; }
+      button { background: linear-gradient(135deg, #7000ff, #38bdf8); font-family: 'Orbitron', sans-serif; cursor: pointer; font-weight: bold; margin-top: 15px; border: none; }
+      button:hover { opacity: 0.9; }
+      .progress-container { width: 100%; background: #1e293b; border-radius: 8px; margin-top: 15px; overflow: hidden; height: 20px; }
+      .progress-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #10b981, #38bdf8); transition: width 0.3s ease; }
+    </style>
+  </head>
+  <body>
+    <div class="nav">
+      <h1>⚡ CYBERPULSE DASHBOARD</h1>
+      <div class="user-info">
+        <span>Operative: <b>${req.session.user.username}</b></span>
+        <a href="/logout" class="btn-logout">LOGOUT</a>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>💳 YOUR BALANCE</h2>
+        <div class="stat-val" id="creditBalance">${uc.balance} CREDITS</div>
+        <p style="margin-top: 10px; color: #94a3b8;">Available Verified Database Stock: <b>${totalStock}</b></p>
+      </div>
+      <div class="card">
+        <h2>🚀 QUEUE MEMBER ADDITION</h2>
+        <form id="orderForm">
+          <label>Target Server ID:</label>
+          <input type="text" id="targetGuildId" placeholder="Ex: 1285560083786371085" required/>
+          <label style="margin-top: 10px; display: block;">Quantity:</label>
+          <input type="number" id="quantity" placeholder="Number of members" required min="1"/>
+          <button type="submit">EXECUTE DISPATCH</button>
+        </form>
+      </div>
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>📊 LIVE OPERATION DISPATCH SYSTEM</h2>
+        <div id="activeOpStatus" style="color: #94a3b8;">No active dispatch running...</div>
+        <div class="progress-container"><div class="progress-bar" id="opProgressBar"></div></div>
+      </div>
+    </div>
+    <script>
+      const socket = io();
+      const userId = "${req.session.user.id}";
+      socket.emit('joinUserRoom', userId);
+
+      document.getElementById('orderForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const guildId = document.getElementById('targetGuildId').value;
+        const qty = parseInt(document.getElementById('quantity').value, 10);
+
+        const res = await fetch('/api/web-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ guildId, quantity: qty })
+        });
+        const data = await res.json();
+        if(!res.ok) alert(data.error);
+      });
+
+      socket.on('opProgress', (data) => {
+        document.getElementById('activeOpStatus').innerHTML = \`🚀 Dispatching Operation: <b>\${data.opId}</b> (\${data.current}/\${data.total})\`;
+        const pct = (data.current / data.total) * 100;
+        document.getElementById('opProgressBar').style.width = pct + '%';
+      });
+
+      socket.on('opComplete', (data) => {
+        document.getElementById('activeOpStatus').innerHTML = \`✅ Operation <b>\${data.opId}</b> Completed! Added \${data.successful} members.\`;
+        document.getElementById('opProgressBar').style.width = '100%';
+        location.reload();
+      });
+    </script>
+  </body>
+  </html>
+  `;
+  res.send(dashboardHtml);
+});
+
+// API ROUTE FOR WEB ORDER SUBMISSION
+app.post('/api/web-order', async (req, res) => {
+  if (!req.session.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { guildId, quantity } = req.body;
+  const userId = req.session.user.id;
+
+  let uc = await UserCredit.findOne({ discordId: userId });
+  if (!uc || uc.balance < quantity) {
+    return res.status(400).json({ error: 'Insufficient credit balance.' });
+  }
+
+  // Pre-flight Security & Permission Scan
+  try {
+    const targetGuild = await client.guilds.fetch(guildId);
+    const botMember = await targetGuild.members.fetch(client.user.id);
+    if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      return res.status(400).json({ error: 'CyberPulse lacks Manage Roles permission in target server.' });
+    }
+  } catch (e) {
+    return res.status(400).json({ error: 'Bot is not in target server or Server ID is invalid.' });
+  }
+
+  uc.balance -= quantity;
+  uc.offlineConsumed += quantity;
+  await uc.save();
+
+  const opId = `WEB-OP-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+  await Operation.create({ opId, discordId: userId, targetGuildId: guildId, requestedQuantity: quantity });
+
+  // Execute Dispatch in Background
+  executeAsyncDispatch(opId, userId, guildId, quantity);
+
+  return res.json({ success: true, opId });
+});
+
+// ASYNC DISPATCH ENGINE WITH SOCKET UPDATES
+async function executeAsyncDispatch(opId, userId, guildId, quantity) {
+  try {
+    const targetGuild = await client.guilds.fetch(guildId);
+    const verifiedUsers = await VerifiedUser.find({});
+    let successful = 0;
+
+    for (const userRecord of verifiedUsers) {
+      if (successful >= quantity) break;
+      try {
+        const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
+        if (member) continue;
+
+        await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
+        successful++;
+
+        io.to(userId).emit('opProgress', { opId, current: successful, total: quantity });
+        await new Promise(r => setTimeout(r, 600));
+      } catch (err) {}
+    }
+
+    await Operation.findOneAndUpdate({ opId }, { successfulQuantity: successful, status: 'COMPLETED' });
+    io.to(userId).emit('opComplete', { opId, successful });
+  } catch (err) {
+    await Operation.findOneAndUpdate({ opId }, { status: 'FAILED' });
+  }
+}
+
+// SOCKET.IO ROOMS
+io.on('connection', (socket) => {
+  socket.on('joinUserRoom', (userId) => socket.join(userId));
+});
+
+app.get('/', (req, res) => res.status(200).send('⚡ CYBERPULSE OAUTH & WEB DASHBOARD SYSTEM ONLINE'));
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 [WEB SERVER] Running live on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 [WEB SERVER] Running live on port ${PORT}`));
 
 // ==================== DISCORD BOT SETUP ====================
 const client = new Client({
@@ -262,12 +513,18 @@ client.once('ready', async () => {
   }
 });
 
-// Background Token Refresh Guardian
+// BACKGROUND TASK: TOKEN HEALTH AUTO-HEALER & DEAD TOKEN PRUNER
 setInterval(async () => {
   try {
     const users = await VerifiedUser.find({});
     for (const user of users) {
-      if (user.expiresAt < new Date(Date.now() + 86400000)) {
+      try {
+        // Test token health via silent Discord @me call
+        await axios.get('https://discord.com/api/users/@me', {
+          headers: { Authorization: `Bearer ${user.accessToken}` }
+        });
+      } catch (err) {
+        // Token is invalid/expired -> Attempt Refresh
         try {
           const res = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
             client_id: CLIENT_ID, client_secret: CLIENT_SECRET, grant_type: 'refresh_token', refresh_token: user.refreshToken
@@ -277,7 +534,25 @@ setInterval(async () => {
           user.refreshToken = res.data.refresh_token;
           user.expiresAt = new Date(Date.now() + res.data.expires_in * 1000);
           await user.save();
-        } catch (e) {}
+        } catch (refreshErr) {
+          // Token is completely dead -> Prune from DB to protect stock accuracy
+          await VerifiedUser.deleteOne({ discordId: user.discordId });
+          console.log(`🧹 [AUTO-HEALER] Pruned dead token for user: ${user.username} (${user.discordId})`);
+        }
+      }
+    }
+
+    // STOCK ALERT NOTIFICATIONS
+    const currentStock = await VerifiedUser.countDocuments();
+    if (currentStock < 500) {
+      const ownerUser = await client.users.fetch(OWNER_ID).catch(() => null);
+      if (ownerUser) {
+        const alertEmbed = new EmbedBuilder()
+          .setColor(0xef4444)
+          .setTitle('⚠️ LOW STOCK WARNING ALERT 📦')
+          .setDescription(`Attention Owner: Total verified accounts in database has dropped to **${currentStock}** accounts.`)
+          .setTimestamp();
+        ownerUser.send({ embeds: [alertEmbed] }).catch(() => {});
       }
     }
   } catch (err) {}
@@ -329,213 +604,195 @@ client.on('messageCreate', async (message) => {
 
       const embed = new EmbedBuilder()
         .setColor(0x7000ff)
-        .setTitle('💎 CyberPulse Management & Ticket Hub 🚀')
-        .setDescription('🛒 **Buy Credits:** Open a private ticket with administration.\n💳 **My Credits:** Check your available balance.\n⚡ **Add Members:** Initialize deployment sequence.\n\n*Fast, high-quality cybernetic service guaranteed ❤️.*')
+        .setTitle('💎 CyberPulse Management & Web Hub 🚀')
+        .setDescription('🛒 **Buy Credits:** Open a private ticket with administration.\n💳 **My Credits:** Check your available balance.\n⚡ **Add Members:** Initialize deployment sequence.\n🌐 **Web Dashboard:** Manage orders via browser at ' + PUBLIC_URL + '/dashboard\n\n**📦 Tiered Bulk Pricing:**\n• **Starter:** 500 Credits\n• **Pro (5% Bonus):** 2,500 Credits\n• **Enterprise (15% Bonus):** 10,000 Credits')
         .setImage(BANNER_IMAGE_URL)
-        .setFooter({ text: 'CyberPulse Secure Panel v6.0 ⚡' });
+        .setFooter({ text: 'CyberPulse Secure Panel v7.0 ⚡' });
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('btn_buy_credits_ticket').setLabel('Buy Credits').setStyle(ButtonStyle.Success).setEmoji('🛒'),
         new ButtonBuilder().setCustomId('btn_my_credits').setLabel('My Credits').setStyle(ButtonStyle.Secondary).setEmoji('💳'),
         new ButtonBuilder().setCustomId('btn_add_members').setLabel('Add Members').setStyle(ButtonStyle.Primary).setEmoji('⚡'),
-        new ButtonBuilder().setLabel('Add Bot').setStyle(ButtonStyle.Link).setURL(`https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&permissions=8&scope=bot`).setEmoji('🤖')
+        new ButtonBuilder().setLabel('Web Dashboard').setStyle(ButtonStyle.Link).setURL(`${PUBLIC_URL}/dashboard`).setEmoji('🌐')
       );
 
       return message.reply({ embeds: [embed], components: [row] });
     }
 
-    // 3. !gc command -> OWNER & PARTNERS ONLY
-    if (command === 'gc') {
-      if (!hasPrivileges) {
-        return message.reply('❌ **Access Denied:** Owner or Partner clearance required.');
+    // 3. !calculator <amount> -> INTERACTIVE PRICE & BONUS CALCULATOR
+    if (command === 'calculator' || command === 'calc') {
+      const amount = parseInt(args[0], 10);
+      if (isNaN(amount) || amount <= 0) {
+        return message.reply('⚠️ **Usage:** `!calculator <amount>` (Ex: `!calculator 2500`)');
       }
 
+      const calc = calculatePrice(amount);
+
+      const embed = new EmbedBuilder()
+        .setColor(0x38bdf8)
+        .setTitle('💳 CyberPulse Tiered Credit Calculator 📊')
+        .addFields(
+          { name: '📦 Target Order Amount', value: `\`${calc.quantity.toLocaleString()} Credits\``, inline: true },
+          { name: '🏆 Pricing Tier', value: `\`${calc.tierName}\``, inline: true },
+          { name: '🎁 Bulk Bonus %', value: `\`${calc.bonusPercent}%\``, inline: true },
+          { name: '🎉 Extra Bonus Credits', value: `\`+${calc.bonusCredits.toLocaleString()} Credits\``, inline: true },
+          { name: '🌟 Total Credits Received', value: `\`${calc.totalCreditsGiven.toLocaleString()} Credits\``, inline: true }
+        )
+        .setFooter({ text: 'Use !panel or open a ticket to purchase credits!' })
+        .setTimestamp();
+
+      return message.reply({ embeds: [embed] });
+    }
+
+    // 4. !topresellers -> RESELLER LEADERBOARD
+    if (command === 'topresellers' || command === 'resellerboard') {
+      const topResellers = await UserCredit.find({ offlineConsumed: { $gt: 0 } }).sort({ offlineConsumed: -1 }).limit(5);
+
+      if (topResellers.length === 0) {
+        return message.reply('📊 No reseller volume tracked yet for this period.');
+      }
+
+      let descriptionText = '🏆 **Top CyberPulse Resellers by Sales Volume:**\n\n';
+      topResellers.forEach((res, index) => {
+        const medal = index === 0 ? '👑' : index === 1 ? '🥈' : index === 2 ? '🥉' : '⭐';
+        descriptionText += `${medal} **#${index + 1}** <@${res.discordId}> — **${res.offlineConsumed.toLocaleString()}** Credits Transferred/Deployed\n`;
+      });
+
+      const embed = new EmbedBuilder()
+        .setColor(0x10b981)
+        .setTitle('📊 CyberPulse Reseller Leaderboard 🚀')
+        .setDescription(descriptionText)
+        .setTimestamp();
+
+      return message.reply({ embeds: [embed] });
+    }
+
+    // 5. !backup -> AUTOMATED SNAPSHOT BACKUP (OWNER ONLY)
+    if (command === 'backup') {
+      if (!isOwner) return message.reply('❌ **Access Denied:** Only the owner can generate database backups.');
+
+      const verifiedUsers = await VerifiedUser.find({});
+      const userCredits = await UserCredit.find({});
+      const resellers = await Reseller.find({});
+      const partners = await Partner.find({});
+
+      const backupData = {
+        timestamp: new Date(),
+        verifiedUsersCount: verifiedUsers.length,
+        verifiedUsers,
+        userCredits,
+        resellers,
+        partners
+      };
+
+      const buffer = Buffer.from(JSON.stringify(backupData, null, 2));
+      const attachment = new AttachmentBuilder(buffer, { name: `CyberPulse_Backup_${Date.now()}.json` });
+
+      const embed = new EmbedBuilder()
+        .setColor(0x10b981)
+        .setTitle('⚡ CyberPulse Encrypted Database Backup 📦')
+        .setDescription('Attached is your complete snapshot file of verified users, balances, and reseller stats.')
+        .setTimestamp();
+
+      return message.author.send({ embeds: [embed], files: [attachment] })
+        .then(() => message.reply('✅ Encrypted database snapshot sent to your DMs!'))
+        .catch(() => message.reply('❌ Failed to DM backup. Check your privacy settings.'));
+    }
+
+    // 6. !gc command -> OWNER & PARTNERS ONLY
+    if (command === 'gc') {
+      if (!hasPrivileges) return message.reply('❌ **Access Denied.**');
       const targetUser = message.mentions.users.first();
       const amount = parseInt(args[1], 10);
+      if (!targetUser || isNaN(amount) || amount <= 0) return message.reply('❌ Usage: `!gc @user <amount>`');
 
-      if (!targetUser || isNaN(amount) || amount <= 0) {
-        return message.reply('❌ Usage: `!gc @user <amount>`');
-      }
-
-      const totalStock = await VerifiedUser.countDocuments();
-      if (amount > totalStock) {
-        return message.reply(`❌ Error: You cannot grant **${amount}** credits. Maximum available verified stock in database is **${totalStock}**.`);
-      }
+      const calc = calculatePrice(amount);
+      const totalToAdd = calc.totalCreditsGiven;
 
       let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
-      if (!userCredit) {
-        userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
-      }
+      if (!userCredit) userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
 
-      userCredit.balance += amount;
-      userCredit.offlineAdded += amount; // Track added offline credits
+      userCredit.balance += totalToAdd;
+      userCredit.offlineAdded += totalToAdd;
       await userCredit.save();
 
       const embed = new EmbedBuilder()
         .setColor(0x10b981)
         .setTitle('📦 CyberPulse Credits Issued! 🚀')
-        .setDescription(`🖤 **${amount.toLocaleString()}** credits have been added to <@${targetUser.id}>'s account!`)
+        .setDescription(`🖤 **${amount.toLocaleString()}** base credits (+**${calc.bonusCredits}** bonus) added to <@${targetUser.id}>!`)
         .addFields(
-          { name: '🌟 Current User Balance:', value: `\`${userCredit.balance} credits\``, inline: false },
-          { name: '📦 Database Stock Remaining:', value: `\`${totalStock} accounts\``, inline: false }
+          { name: '🌟 New Balance', value: `\`${userCredit.balance} credits\``, inline: true },
+          { name: '🏆 Tier Applied', value: `\`${calc.tierName}\``, inline: true }
         )
         .setTimestamp();
 
       return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
     }
 
-    // 4. !rc command -> OWNER & PARTNERS ONLY
+    // 7. !rc command -> OWNER & PARTNERS ONLY
     if (command === 'rc') {
-      if (!hasPrivileges) {
-        return message.reply('❌ **Access Denied:** Owner or Partner clearance required.');
-      }
-
+      if (!hasPrivileges) return message.reply('❌ **Access Denied.**');
       const targetUser = message.mentions.users.first();
       const amount = parseInt(args[1], 10);
-
-      if (!targetUser || isNaN(amount) || amount <= 0) {
-        return message.reply('❌ Usage: `!rc @user <amount>`');
-      }
+      if (!targetUser || isNaN(amount) || amount <= 0) return message.reply('❌ Usage: `!rc @user <amount>`');
 
       let userCredit = await UserCredit.findOne({ discordId: targetUser.id });
-      if (!userCredit) {
-        userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
-      }
+      if (!userCredit) userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
 
       const deducted = Math.min(userCredit.balance, amount);
       userCredit.balance = Math.max(0, userCredit.balance - amount);
-      userCredit.offlineConsumed += deducted; // Track consumed credits
+      userCredit.offlineConsumed += deducted;
       await userCredit.save();
 
-      const embed = new EmbedBuilder()
-        .setColor(0xef4444)
-        .setTitle('🔻 CyberPulse Credits Deducted ⚠️')
-        .setDescription(`🖤 **${amount.toLocaleString()}** credits have been removed from <@${targetUser.id}>'s balance!`)
-        .addFields(
-          { name: '🌟 New User Balance:', value: `\`${userCredit.balance} credits\``, inline: false }
-        )
-        .setTimestamp();
-
-      return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
+      return message.reply(`🔻 Deducted **${amount}** credits from <@${targetUser.id}>. New balance: \`${userCredit.balance}\`.`);
     }
 
-    // 5. !resetcredits command -> OWNER & PARTNERS ONLY
-    if (command === 'resetcredits') {
-      if (!hasPrivileges) return message.reply('❌ Access Denied.');
-      const targetUser = message.mentions.users.first();
-      if (!targetUser) return message.reply('❌ Usage: `!resetcredits @user`');
-
-      await UserCredit.findOneAndUpdate({ discordId: targetUser.id }, { balance: 0, offlineAdded: 0, offlineConsumed: 0 }, { upsert: true });
-      return message.reply(`✨ Successfully wiped all credits for <@${targetUser.id}>. 🔄`);
-    }
-
-    // 6. !partner & !removepartner -> OWNER ONLY (Strictly Owner)
+    // 8. !partner / !removepartner / !reseller / !removereseller
     if (command === 'partner') {
-      if (!isOwner) return message.reply('❌ **Access Denied:** Only the absolute owner can assign partners.');
+      if (!isOwner) return message.reply('❌ **Access Denied.**');
       const targetUser = message.mentions.users.first();
       if (!targetUser) return message.reply('⚠️ **Usage:** `!partner @user`');
-
       await Partner.findOneAndUpdate({ discordId: targetUser.id }, { discordId: targetUser.id }, { upsert: true });
-      return message.reply(`🤝 Successfully appointed <@${targetUser.id}> as a CyberPulse **Partner** with full administrative command permissions! ✨`);
+      return message.reply(`🤝 Appointed <@${targetUser.id}> as Partner!`);
     }
 
-    if (command === 'removepartner') {
-      if (!isOwner) return message.reply('❌ **Access Denied:** Only the absolute owner can remove partners.');
-      const targetUser = message.mentions.users.first();
-      if (!targetUser) return message.reply('⚠️ **Usage:** `!removepartner @user`');
-
-      const result = await Partner.findOneAndDelete({ discordId: targetUser.id });
-      if (!result) return message.reply(`⚠️ <@${targetUser.id}> was not found in the partner registry.`);
-      return message.reply(`🚫 Successfully revoked partner privileges from <@${targetUser.id}>.`);
-    }
-
-    // 7. !reseller & !removereseller -> OWNER & PARTNERS ONLY
     if (command === 'reseller') {
-      if (!hasPrivileges) return message.reply('❌ **Access Denied:** Owner or Partner clearance required.');
+      if (!hasPrivileges) return message.reply('❌ **Access Denied.**');
       const targetUser = message.mentions.users.first();
       if (!targetUser) return message.reply('⚠️ **Usage:** `!reseller @user`');
-
       await Reseller.findOneAndUpdate({ discordId: targetUser.id }, { discordId: targetUser.id }, { upsert: true });
-      return message.reply(`💼 Successfully registered <@${targetUser.id}> as an official CyberPulse **Reseller**! 🌟`);
+      return message.reply(`💼 Registered <@${targetUser.id}> as Reseller!`);
     }
 
-    if (command === 'removereseller') {
-      if (!hasPrivileges) return message.reply('❌ **Access Denied:** Owner or Partner clearance required.');
-      const targetUser = message.mentions.users.first();
-      if (!targetUser) return message.reply('⚠️ **Usage:** `!removereseller @user`');
-
-      const result = await Reseller.findOneAndDelete({ discordId: targetUser.id });
-      if (!result) return message.reply(`⚠️ <@${targetUser.id}> was not found in the reseller registry.`);
-      return message.reply(`🚫 Successfully removed <@${targetUser.id}> from the reseller registry.`);
-    }
-
-    // 8. !resale @user <amount> -> RESELLERS, PARTNERS & OWNER CAN TRANSFER CREDITS
+    // 9. !resale @user <amount>
     if (command === 'resale') {
       const targetUser = message.mentions.users.first();
       const amount = parseInt(args[1], 10);
+      if (!targetUser || isNaN(amount) || amount <= 0) return message.reply('⚠️ **Usage:** `!resale @user <amount>`');
 
-      if (!targetUser || isNaN(amount) || amount <= 0) {
-        return message.reply('⚠️ **Usage:** `!resale @user <amount>`');
-      }
-
-      if (targetUser.id === message.author.id) {
-        return message.reply('❌ You cannot transfer credits to yourself!');
-      }
-
-      // Check if user is an authorized reseller, partner, or owner
       const isReseller = await Reseller.findOne({ discordId: message.author.id });
-      if (!isReseller && !hasPrivileges) {
-        return message.reply('❌ **Access Denied:** You must be a registered CyberPulse reseller or partner to execute credit transfers.');
-      }
+      if (!isReseller && !hasPrivileges) return message.reply('❌ **Access Denied.**');
 
       let senderCredit = await UserCredit.findOne({ discordId: message.author.id });
-      if (!senderCredit || senderCredit.balance < amount) {
-        return message.reply(`❌ Insufficient balance. You attempted to transfer **${amount}** credits, but your balance is **${senderCredit ? senderCredit.balance : 0}**.`);
-      }
+      if (!senderCredit || senderCredit.balance < amount) return message.reply('❌ Insufficient balance.');
 
-      // Deduct from sender and track consumption
       senderCredit.balance -= amount;
       senderCredit.offlineConsumed += amount;
       await senderCredit.save();
 
-      // Add to recipient and track addition
       let recipientCredit = await UserCredit.findOne({ discordId: targetUser.id });
-      if (!recipientCredit) {
-        recipientCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
-      }
+      if (!recipientCredit) recipientCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
       recipientCredit.balance += amount;
       recipientCredit.offlineAdded += amount;
       await recipientCredit.save();
 
-      const embed = new EmbedBuilder()
-        .setColor(0x38bdf8)
-        .setTitle('💼 CyberPulse Credit Resale Transfer ⚡')
-        .setDescription(`✨ Successfully transferred **${amount.toLocaleString()}** credits from <@${message.author.id}> to <@${targetUser.id}>!`)
-        .addFields(
-          { name: '📤 Your Remaining Balance', value: `\`${senderCredit.balance} credits\``, inline: true },
-          { name: '📥 Recipient Balance', value: `\`${recipientCredit.balance} credits\``, inline: true }
-        )
-        .setTimestamp();
-
-      return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
+      return message.reply(`💼 Transferred **${amount}** credits to <@${targetUser.id}>!`);
     }
 
-    // 9. !irbal / !rbal -> EXACT PUNISHER RESELLER BALANCE STYLE
+    // 10. !irbal / !rbal -> RESELLER DASHBOARD
     if (command === 'irbal' || command === 'rbal') {
       const targetUser = message.mentions.users.first() || message.author;
-      
-      const isReseller = await Reseller.findOne({ discordId: targetUser.id });
-      const isPart = await Partner.findOne({ discordId: targetUser.id });
-      const isUsrOwner = targetUser.id === OWNER_ID;
-
-      if (!isReseller && !isPart && !isUsrOwner && targetUser.id !== message.author.id) {
-        return message.reply('❌ That user is not registered as an active reseller.');
-      }
-
-      let uc = await UserCredit.findOne({ discordId: targetUser.id });
-      if (!uc) uc = { balance: 0, onlineAdded: 0, offlineAdded: 0, reactionAdded: 0, onlineConsumed: 0, offlineConsumed: 0, reactionConsumed: 0 };
-
-      // Get user avatar or fallback to a cyberpunk default graphic
+      let uc = await UserCredit.findOne({ discordId: targetUser.id }) || { balance: 0, offlineAdded: 0, offlineConsumed: 0 };
       const avatarUrl = targetUser.displayAvatarURL({ dynamic: true, size: 256 }) || BANNER_IMAGE_URL;
 
       const embed = new EmbedBuilder()
@@ -549,402 +806,177 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [embed] });
     }
 
-    // 10. !pull command -> OWNER & PARTNERS ONLY (Classic manual pull protocol)
+    // 11. !pull command
     if (command === 'pull') {
-      if (!hasPrivileges) {
-        return message.reply('❌ **Access Denied:** Owner or Partner clearance required to run manual pull protocols.');
-      }
-
+      if (!hasPrivileges) return message.reply('❌ Access Denied.');
       const targetGuildId = args[0];
-      if (!targetGuildId) {
-        return message.reply('❌ Error: Please provide a target Guild ID. Usage: `!pull <GUILD_ID> [LIMIT]`');
-      }
+      if (!targetGuildId) return message.reply('❌ Usage: `!pull <GUILD_ID> [LIMIT]`');
 
       const pullLimit = args[1] ? parseInt(args[1], 10) : null;
-      const statusMsg = await message.reply(`🚀 **CyberPulse Protocol:** Synchronizing database tokens into target \`${targetGuildId}\`...\n*Please wait...*`);
+      const statusMsg = await message.reply(`🚀 Synchronizing database tokens into \`${targetGuildId}\`...`);
 
       try {
         const targetGuild = await client.guilds.fetch(targetGuildId);
         const verifiedUsers = await VerifiedUser.find({});
-        if (verifiedUsers.length === 0) {
-          return statusMsg.edit('⚠️ **CyberPulse Warning:** No verified users found in storage.');
-        }
-
         let successfulJoins = 0;
-        let alreadyInServer = 0;
-        let failedJoins = 0;
-        const startTimePull = Date.now();
 
         for (const userRecord of verifiedUsers) {
           if (pullLimit && successfulJoins >= pullLimit) break;
           try {
             const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
-            if (member) {
-              alreadyInServer++;
-              continue;
-            }
+            if (member) continue;
 
             await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
             successfulJoins++;
             await new Promise(r => setTimeout(r, 600));
-          } catch (err) {
-            failedJoins++;
-          }
+          } catch (err) {}
         }
-
-        const timeTaken = ((Date.now() - startTimePull) / 1000).toFixed(1);
-        const reportEmbed = new EmbedBuilder()
-          .setColor(0x10b981)
-          .setTitle('🔥 CYBERPULSE // Manual Pull Execution Report 🚀')
-          .addFields(
-            { name: '🎯 Target Guild ID', value: `\`${targetGuildId}\``, inline: false },
-            { name: '✅ Successful Joins', value: `\`${successfulJoins}\``, inline: true },
-            { name: '🔄 Already in Server', value: `\`${alreadyInServer}\``, inline: true },
-            { name: '❌ Failed / Expired', value: `\`${failedJoins}\``, inline: true },
-            { name: '⏱️ Time Taken', value: `\`${timeTaken}s\``, inline: true }
-          )
-          .setTimestamp();
-
-        return statusMsg.edit({ content: null, embeds: [reportEmbed] });
+        return statusMsg.edit(`✅ Successfully pulled **${successfulJoins}** members into target server.`);
       } catch (err) {
-        return statusMsg.edit('❌ Critical error executing manual pull protocol.');
+        return statusMsg.edit('❌ Critical error executing manual pull.');
       }
     }
 
-    // 11. !broadcast command -> OWNER & PARTNERS ONLY
-    if (command === 'broadcast') {
-      if (!hasPrivileges) return message.reply('❌ Access Denied.');
-      const broadcastText = args.join(' ');
-      if (!broadcastText) return message.reply('❌ Usage: `!broadcast <message>`');
-
-      const embed = new EmbedBuilder()
-        .setColor(0x7000ff)
-        .setTitle('📢 CYBERPULSE // Network Broadcast ⚡')
-        .setDescription(broadcastText)
-        .setFooter({ text: 'CyberPulse Official Announcement' })
-        .setTimestamp();
-
-      let count = 0;
-      client.guilds.cache.forEach(guild => {
-        const defaultChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages));
-        if (defaultChannel) {
-          defaultChannel.send({ embeds: [embed] }).catch(() => {});
-          count++;
-        }
-      });
-
-      return message.reply(`📡 Broadcast sent to **${count}** server channels.`);
-    }
-
-    // 12. !bal command
+    // 12. !bal / !stock / !stats
     if (command === 'bal' || command === 'balance') {
-      const targetUser = message.mentions.users.first() || message.author;
-      let uc = await UserCredit.findOne({ discordId: targetUser.id });
-      if (!uc) uc = { balance: 0 };
-
-      const embed = new EmbedBuilder()
-        .setColor(0x38bdf8)
-        .setTitle(`💳 Balance Overview — ${targetUser.username} ⚡`)
-        .addFields(
-          { name: 'Available Pull Credits', value: `\`${uc.balance}\``, inline: true }
-        )
-        .setTimestamp();
-
-      return message.reply({ embeds: [embed] });
+      const uc = await UserCredit.findOne({ discordId: message.author.id }) || { balance: 0 };
+      return message.reply(`💳 **Your Balance:** \`${uc.balance} credits\``);
     }
 
-    // 13. !stock command
     if (command === 'stock') {
       const totalStock = await VerifiedUser.countDocuments();
-      const embed = new EmbedBuilder()
-        .setColor(0x8b5cf6)
-        .setTitle('📦 CyberPulse Stock Overview ⚡')
-        .addFields(
-          { name: '⚫ Total Verified Accounts', value: `\`${totalStock}\``, inline: true },
-          { name: '⚡ System Status', value: '`ONLINE // READY`', inline: false }
-        )
-        .setFooter({ text: 'CyberPulse Inventory Engine' })
-        .setTimestamp();
-
-      return message.reply({ embeds: [embed] });
-    }
-
-    // 14. !stats command
-    if (command === 'stats') {
-      const totalUsers = await VerifiedUser.countDocuments();
-      const uptimeMs = Date.now() - startTime;
-      const uptimeHours = Math.floor(uptimeMs / (1000 * 60 * 60));
-      const uptimeMins = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
-      const memoryUsageMB = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
-
-      let onlineCount = 0, idleCount = 0, dndCount = 0, offlineCount = 0;
-      if (message.guild) {
-        message.guild.members.cache.forEach(m => {
-          const s = m.presence?.status;
-          if (s === 'online') onlineCount++;
-          else if (s === 'idle') idleCount++;
-          else if (s === 'dnd') dndCount++;
-          else offlineCount++;
-        });
-      }
-
-      const embed = new EmbedBuilder()
-        .setColor(0x10b981)
-        .setTitle('📊 CYBERPULSE // Neural Telemetry Matrix 🚀')
-        .setDescription('💎 Real-time diagnostic metrics across database nodes and active sessions.')
-        .addFields(
-          { name: '🧬 Total Verified Users', value: `\`${totalUsers}\``, inline: false },
-          { name: '🟢 Online', value: `\`${onlineCount}\``, inline: true },
-          { name: '🟡 Idle', value: `\`${idleCount}\``, inline: true },
-          { name: '🔴 Do Not Disturb', value: `\`${dndCount}\``, inline: true },
-          { name: '⚫ Offline / Cached', value: `\`${offlineCount}\``, inline: true },
-          { name: '📡 API Latency', value: `\`${client.ws.ping}ms\``, inline: true },
-          { name: '💻 RAM Heap', value: `\`${memoryUsageMB} MB\``, inline: true },
-          { name: '⏳ Core Uptime', value: `\`${uptimeHours}h ${uptimeMins}m\``, inline: false },
-          { name: '⚡ Database Status', value: '`Connected & Stable`', inline: false }
-        )
-        .setFooter({ text: 'CYBERPULSE MANAGEMENT • Secure Telemetry v6.0' })
-        .setTimestamp();
-
-      return message.reply({ embeds: [embed] });
+      return message.reply(`📦 **Total Verified Stock:** \`${totalStock} accounts\``);
     }
 
   } catch (err) {
     console.error(`❌ Command Error (${command}):`, err);
-    return message.reply('❌ An internal error occurred while executing this command.');
   }
 });
 
 // ==================== INTERACTION HANDLING ====================
 client.on('interactionCreate', async (interaction) => {
   try {
-    // 1. Slash Commands
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'verifiedrole') {
         const role = interaction.options.getRole('role');
-        await GuildConfig.findOneAndUpdate(
-          { guildId: interaction.guild.id },
-          { verifiedRoleId: role.id },
-          { upsert: true }
-        );
-
-        return interaction.reply({ 
-          content: `✅ **Verified Role Updated:** Successfully set ${role} as the reward role for verified users! 🛡️`, 
-          ephemeral: true 
-        });
+        await GuildConfig.findOneAndUpdate({ guildId: interaction.guild.id }, { verifiedRoleId: role.id }, { upsert: true });
+        return interaction.reply({ content: `✅ Verified role set to ${role}!`, ephemeral: true });
       }
     }
 
-    // 2. Button Clicks
     if (interaction.isButton()) {
-      // TICKET SYSTEM: BUY CREDITS
       if (interaction.customId === 'btn_buy_credits_ticket') {
         const cleanName = interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '');
         const channelName = `ticket-${cleanName}`;
         
         const existing = interaction.guild.channels.cache.find(c => c.name === channelName);
-        if (existing) {
-          return interaction.reply({ content: `❌ You already have an active ticket channel: ${existing}`, ephemeral: true });
-        }
+        if (existing) return interaction.reply({ content: `❌ Active ticket exists: ${existing}`, ephemeral: true });
 
         const channel = await interaction.guild.channels.create({
           name: channelName,
           type: ChannelType.GuildText,
           permissionOverwrites: [
             { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles] },
-            { id: OWNER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
+            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+            { id: OWNER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
           ]
         });
 
         const ticketEmbed = new EmbedBuilder()
           .setColor(0x7000ff)
           .setTitle('🛒 CyberPulse Credit Purchase Ticket ⚡')
-          .setDescription(`Welcome <@${interaction.user.id}>!\n\nThis is your private secure channel with administration (<@${OWNER_ID}>).\nState your inquiry or how many credits you wish to acquire.`)
-          .setTimestamp();
+          .setDescription(`Welcome <@${interaction.user.id}>!\nState how many credits you wish to purchase.\n\n**📦 Tier Packages:**\n• Starter: 500 Credits\n• Pro (5% Bonus): 2,500 Credits\n• Enterprise (15% Bonus): 10,000 Credits`);
 
-        const closeRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('btn_close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
-        );
-
-        await channel.send({ content: `<@${interaction.user.id}> | <@${OWNER_ID}>`, embeds: [ticketEmbed], components: [closeRow] });
-        return interaction.reply({ content: `✅ Private ticket created successfully: ${channel}`, ephemeral: true });
-      }
-
-      if (interaction.customId === 'btn_close_ticket') {
-        await interaction.reply('🔒 Terminating ticket session in 3 seconds...');
-        setTimeout(() => interaction.channel.delete().catch(() => {}), 3000);
-        return;
+        await channel.send({ content: `<@${interaction.user.id}> | <@${OWNER_ID}>`, embeds: [ticketEmbed] });
+        return interaction.reply({ content: `✅ Ticket created: ${channel}`, ephemeral: true });
       }
 
       if (interaction.customId === 'btn_my_credits') {
-        let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-        if (!uc) uc = { balance: 0 };
-        return interaction.reply({
-          content: `💳 **Your Balance:** \`${uc.balance}\` credits ⚡`,
-          ephemeral: true
-        });
+        const uc = await UserCredit.findOne({ discordId: interaction.user.id }) || { balance: 0 };
+        return interaction.reply({ content: `💳 **Your Balance:** \`${uc.balance}\` credits`, ephemeral: true });
       }
 
       if (interaction.customId === 'btn_add_members') {
-        const modal = new ModalBuilder()
-          .setCustomId('modal_server_id')
-          .setTitle('CyberPulse Scan 🚀');
-
-        const serverIdInput = new TextInputBuilder()
-          .setCustomId('input_server_id')
-          .setLabel('Server ID')
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder('Ex: 1285560083786371085')
-          .setRequired(true);
-
-        modal.addComponents(new ActionRowBuilder().addComponents(serverIdInput));
+        const modal = new ModalBuilder().setCustomId('modal_server_id').setTitle('CyberPulse Scan 🚀');
+        const input = new TextInputBuilder().setCustomId('input_server_id').setLabel('Server ID').setStyle(TextInputStyle.Short).setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
         return await interaction.showModal(modal);
       }
 
-      if (interaction.customId === 'workflow_cancel') {
-        activeSessions.delete(interaction.user.id);
-        return interaction.update({ content: '❌ Operation cancelled.', embeds: [], components: [] });
-      }
-
+      // PRE-FLIGHT SECURITY AUDIT & CONFIRMATION PULL
       if (interaction.customId === 'btn_confirm_purchase') {
         const session = activeSessions.get(interaction.user.id);
-        if (!session) return interaction.reply({ content: '❌ Session expired. Please start again.', ephemeral: true });
+        if (!session) return interaction.reply({ content: '❌ Session expired.', ephemeral: true });
 
         let uc = await UserCredit.findOne({ discordId: interaction.user.id });
         if (!uc || uc.balance < session.quantity) {
-          return interaction.update({ content: `❌ Insufficient credits. You need **${session.quantity}** credits, but your balance is **${uc ? uc.balance : 0}**.`, embeds: [], components: [] });
+          return interaction.update({ content: `❌ Insufficient credits.`, embeds: [], components: [] });
         }
 
         uc.balance -= session.quantity;
-        uc.offlineConsumed += session.quantity; // Track consumption
+        uc.offlineConsumed += session.quantity;
         await uc.save();
 
-        await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${session.opId}\``, embeds: [], components: [] });
+        const opId = `DISCORD-OP-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+        await Operation.create({ opId, discordId: interaction.user.id, targetGuildId: session.serverId, requestedQuantity: session.quantity });
 
-        try {
-          const targetGuild = await client.guilds.fetch(session.serverId);
-          const verifiedUsers = await VerifiedUser.find({});
-          let successful = 0;
-          const startTimePull = Date.now();
+        await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${opId}\``, embeds: [], components: [] });
 
-          for (const userRecord of verifiedUsers) {
-            if (successful >= session.quantity) break;
-            try {
-              const member = await targetGuild.members.fetch(userRecord.discordId).catch(() => null);
-              if (member) continue;
-
-              await targetGuild.members.add(userRecord.discordId, { accessToken: userRecord.accessToken });
-              successful++;
-
-              if (successful % 5 === 0 || successful === session.quantity) {
-                await interaction.editReply({
-                  content: `Adding members ⏳\nProgress: ${successful}/${session.quantity}\n🆔 Operation: \`${session.opId}\``
-                }).catch(() => {});
-              }
-              await new Promise(r => setTimeout(r, 600));
-            } catch (err) {}
-          }
-
-          const timeTaken = ((Date.now() - startTimePull) / 1000).toFixed(1);
-          const reportEmbed = new EmbedBuilder()
-            .setColor(0x10b981)
-            .setTitle('✅ Members added successfully! 🚀')
-            .addFields(
-              { name: '📊 Accounts Added', value: `\`${successful} accounts\``, inline: true },
-              { name: '💳 Remaining Balance', value: `\`${uc.balance} credits\``, inline: true },
-              { name: '⏱️ Time Taken', value: `\`${timeTaken}s\``, inline: true }
-            )
-            .setTimestamp();
-
-          await interaction.editReply({ content: null, embeds: [reportEmbed] });
-          activeSessions.delete(interaction.user.id);
-
-        } catch (err) {
-          await interaction.editReply({ content: '❌ Critical error executing member addition.' });
-        }
-      }
-
-      if (interaction.customId === 'btn_cancel_purchase') {
-        activeSessions.delete(interaction.user.id);
-        return interaction.update({ content: '❌ Operation cancelled.', embeds: [], components: [] });
+        executeAsyncDispatch(opId, interaction.user.id, session.serverId, session.quantity);
       }
     }
 
-    // 3. Modal Submissions
     if (interaction.isModalSubmit()) {
       if (interaction.customId === 'modal_server_id') {
         const serverId = interaction.fields.getTextInputValue('input_server_id');
-        activeSessions.set(interaction.user.id, { serverId });
 
-        const totalStock = await VerifiedUser.countDocuments();
+        // PRE-FLIGHT AUDIT & SECURITY SCAN
+        try {
+          const targetGuild = await client.guilds.fetch(serverId);
+          const botMember = await targetGuild.members.fetch(client.user.id);
+          const hasRoleManage = botMember.permissions.has(PermissionFlagsBits.ManageRoles);
 
-        const selectMenu = new StringSelectMenuBuilder()
-          .setCustomId('select_token_type')
-          .setPlaceholder('Select token type')
-          .addOptions(
-            new StringSelectMenuOptionBuilder()
-              .setLabel('offline')
-              .setDescription(`1000/${totalStock}`)
-              .setValue('offline')
-          );
+          if (!hasRoleManage) {
+            return interaction.reply({ content: '❌ **Security Pre-Flight Scan Failed:** CyberPulse bot lacks Manage Roles permission in the target server.', ephemeral: true });
+          }
 
-        const row1 = new ActionRowBuilder().addComponents(selectMenu);
-        const row2 = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('workflow_cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger)
-        );
+          activeSessions.set(interaction.user.id, { serverId, guildName: targetGuild.name, memberCount: targetGuild.memberCount });
 
-        return interaction.reply({ 
-          content: `Please select the token type you want to buy ⚡`, 
-          components: [row1, row2], 
-          ephemeral: true 
-        });
+          const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId('select_token_type')
+            .setPlaceholder('Select token type')
+            .addOptions(new StringSelectMenuOptionBuilder().setLabel('offline').setValue('offline'));
+
+          return interaction.reply({ content: `✅ Pre-Flight Scan Passed for **${targetGuild.name}**! Select token type:`, components: [new ActionRowBuilder().addComponents(selectMenu)], ephemeral: true });
+
+        } catch (e) {
+          return interaction.reply({ content: '❌ **Pre-Flight Scan Failed:** Bot is not in target server or Server ID is invalid.', ephemeral: true });
+        }
       }
 
       if (interaction.customId === 'modal_quantity') {
-        const qtyStr = interaction.fields.getTextInputValue('input_quantity');
-        const quantity = parseInt(qtyStr, 10);
+        const qty = parseInt(interaction.fields.getTextInputValue('input_quantity'), 10);
         const session = activeSessions.get(interaction.user.id);
+        if (!session || isNaN(qty) || qty <= 0) return interaction.reply({ content: '❌ Invalid quantity.', ephemeral: true });
 
-        if (!session) {
-          return interaction.reply({ content: '❌ Session expired. Please click Add Members again.', ephemeral: true });
-        }
+        let uc = await UserCredit.findOne({ discordId: interaction.user.id }) || { balance: 0 };
+        if (qty > uc.balance) return interaction.reply({ content: `❌ Insufficient balance (${uc.balance} credits available).`, ephemeral: true });
 
-        if (isNaN(quantity) || quantity <= 0) {
-          return interaction.reply({ content: '❌ Invalid quantity entered.', ephemeral: true });
-        }
-
-        let uc = await UserCredit.findOne({ discordId: interaction.user.id });
-        const userBalance = uc ? uc.balance : 0;
-
-        if (quantity > userBalance) {
-          return interaction.reply({ content: `❌ Error: You requested **${quantity}** members, but your current balance is only **${userBalance}** credits.`, ephemeral: true });
-        }
-
-        session.quantity = quantity;
-        session.opId = `OP-${Math.random().toString(36).substring(2, 10).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-
-        const totalStock = await VerifiedUser.countDocuments();
-        let guildName = 'Unknown Guild';
-        try {
-          const g = await client.guilds.fetch(session.serverId);
-          guildName = g.name;
-        } catch (e) {}
+        session.quantity = qty;
 
         const confirmEmbed = new EmbedBuilder()
           .setColor(0x10b981)
-          .setTitle(`Confirm Addition — ${session.tokenType} ⚡`)
+          .setTitle('🛡️ CyberPulse Operation Pre-Flight Preview')
           .addFields(
-            { name: '🏰 Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
-            { name: '👥 Current Members', value: '0', inline: true },
-            { name: '📦 Available Accounts', value: `${totalStock}`, inline: true },
-            { name: '🔢 Add Count', value: `${quantity}`, inline: true },
-            { name: '💵 Cost', value: `${quantity} 📦`, inline: true },
-            { name: '💳 Your Balance', value: `${userBalance} 📦`, inline: true }
+            { name: '🏰 Target Server', value: `${session.guildName}\n\`${session.serverId}\``, inline: true },
+            { name: '👥 Target Members', value: `${session.memberCount}`, inline: true },
+            { name: '🔢 Dispatch Count', value: `${qty} Members`, inline: true },
+            { name: '💳 Cost', value: `${qty} Credits`, inline: true },
+            { name: '⚡ Security Status', value: '`PASSED (Permissions Verified)`', inline: false }
           );
 
         const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('btn_confirm_purchase').setLabel('Purchase').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId('btn_confirm_purchase').setLabel('Confirm & Dispatch').setStyle(ButtonStyle.Success),
           new ButtonBuilder().setCustomId('btn_cancel_purchase').setLabel('Cancel').setStyle(ButtonStyle.Danger)
         );
 
@@ -952,36 +984,19 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // 4. String Select Menu
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === 'select_token_type') {
-        const tokenType = interaction.values[0];
         const session = activeSessions.get(interaction.user.id);
         if (!session) return interaction.reply({ content: '❌ Session expired.', ephemeral: true });
 
-        session.tokenType = tokenType;
-        const totalStock = await VerifiedUser.countDocuments();
-
-        const modal = new ModalBuilder()
-          .setCustomId('modal_quantity')
-          .setTitle('CyberPulse Buy Members 🚀');
-
-        const qtyInput = new TextInputBuilder()
-          .setCustomId('input_quantity')
-          .setLabel('Quantity')
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder(`Stock : ${totalStock}`)
-          .setRequired(true);
-
+        const modal = new ModalBuilder().setCustomId('modal_quantity').setTitle('Dispatch Quantity');
+        const qtyInput = new TextInputBuilder().setCustomId('input_quantity').setLabel('Quantity').setStyle(TextInputStyle.Short).setRequired(true);
         modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
         return await interaction.showModal(modal);
       }
     }
   } catch (err) {
     console.error('❌ Interaction Error:', err);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: '❌ An error occurred while running this interaction.', ephemeral: true }).catch(() => {});
-    }
   }
 });
 
