@@ -42,9 +42,9 @@ if (!TOKEN || !CLIENT_ID || !CLIENT_SECRET || !MONGO_URI) {
 
 const startTime = Date.now();
 
-// ==================== MONGODB DATABASE SCHEMAS ====================
+// ==================== DATABASE SCHEMAS ====================
 mongoose.connect(MONGO_URI)
-  .then(() => console.log("⚡ [DATABASE] Connected to MongoDB Atlas successfully!"))
+  .then(() => console.log("⚡ [DATABASE] Connected to database successfully!"))
   .catch(err => console.error("❌ [DATABASE ERROR]:", err));
 
 const userSchema = new mongoose.Schema({
@@ -59,9 +59,27 @@ const VerifiedUser = mongoose.model('VerifiedUser', userSchema);
 
 const creditSchema = new mongoose.Schema({
   discordId: { type: String, required: true, unique: true },
-  balance: { type: Number, default: 0 }
+  balance: { type: Number, default: 0 },
+  onlineAdded: { type: Number, default: 0 },
+  offlineAdded: { type: Number, default: 0 },
+  reactionAdded: { type: Number, default: 0 },
+  onlineConsumed: { type: Number, default: 0 },
+  offlineConsumed: { type: Number, default: 0 },
+  reactionConsumed: { type: Number, default: 0 }
 }, { collection: 'usercredits' });
 const UserCredit = mongoose.model('UserCredit', creditSchema);
+
+const resellerSchema = new mongoose.Schema({
+  discordId: { type: String, required: true, unique: true },
+  addedAt: { type: Date, default: Date.now }
+}, { collection: 'resellers' });
+const Reseller = mongoose.model('Reseller', resellerSchema);
+
+const partnerSchema = new mongoose.Schema({
+  discordId: { type: String, required: true, unique: true },
+  addedAt: { type: Date, default: Date.now }
+}, { collection: 'partners' });
+const Partner = mongoose.model('Partner', partnerSchema);
 
 const guildConfigSchema = new mongoose.Schema({
   guildId: { type: String, required: true, unique: true },
@@ -70,6 +88,13 @@ const guildConfigSchema = new mongoose.Schema({
 const GuildConfig = mongoose.model('GuildConfig', guildConfigSchema);
 
 const activeSessions = new Map();
+
+// Helper to check if a user has administrative/owner privileges (Owner or Partner)
+async function hasOwnerPrivileges(userId) {
+  if (userId === OWNER_ID) return true;
+  const isPartner = await Partner.findOne({ discordId: userId });
+  return !!isPartner;
+}
 
 // ==================== EXPRESS WEB SERVER SETUP ====================
 const app = express();
@@ -81,7 +106,7 @@ const successHtml = `
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ABYSSAL // Authorization Complete</title>
+  <title>CYBERPULSE // Authorization Complete</title>
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -131,7 +156,7 @@ const successHtml = `
   <div class="container">
     <div class="card">
       <div class="subtitle">System Authorization</div>
-      <h1 class="title">Abyssal Management</h1>
+      <h1 class="title">CyberPulse Management</h1>
       <div class="icon-wrapper">
         <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
       </div>
@@ -177,7 +202,7 @@ app.get('/callback', async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // Auto-assign Verified Role across all connected bot guilds
+    // Auto-assign Verified Role across connected guilds
     client.guilds.cache.forEach(async (guild) => {
       try {
         const config = await GuildConfig.findOne({ guildId: guild.id });
@@ -196,7 +221,7 @@ app.get('/callback', async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => res.status(200).send('⚡ ABYSSAL OAUTH SYSTEM ONLINE'));
+app.get('/', (req, res) => res.status(200).send('⚡ CYBERPULSE OAUTH SYSTEM ONLINE'));
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 [WEB SERVER] Running live on port ${PORT}`));
 
@@ -272,15 +297,18 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
+  const isOwner = message.author.id === OWNER_ID;
+  const hasPrivileges = await hasOwnerPrivileges(message.author.id);
+
   try {
     // 1. !verify command
     if (command === 'verify') {
       const embed = new EmbedBuilder()
         .setColor(0x7000ff)
-        .setTitle('⚡ System Clearance & Verification')
+        .setTitle('⚡ CyberPulse System Clearance & Verification')
         .setDescription('✨ Click the secure button below to complete OAuth2 authorization, claim your verified role, and unlock full server access.')
         .setImage(BANNER_IMAGE_URL)
-        .setFooter({ text: 'Abyssal Security Protocol 🛡️' });
+        .setFooter({ text: 'CyberPulse Security Protocol 🛡️' });
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -293,18 +321,18 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [embed], components: [row] });
     }
 
-    // 2. !panel command -> OWNER ONLY
+    // 2. !panel command -> OWNER & PARTNERS ONLY
     if (command === 'panel') {
-      if (message.author.id !== OWNER_ID) {
-        return message.reply('❌ **Access Denied:** Only the absolute bot owner can deploy the master panel.');
+      if (!hasPrivileges) {
+        return message.reply('❌ **Access Denied:** Only the bot owner or authorized partners can deploy the master panel.');
       }
 
       const embed = new EmbedBuilder()
         .setColor(0x7000ff)
-        .setTitle('💎 Abyssal Management & Ticket Hub')
-        .setDescription('🛒 **Buy Credits:** Open a private ticket with the owner (<@' + OWNER_ID + '>).\n💳 **My Credits:** Check your available balance.\n⚡ **Add Members:** Initialize deployment sequence.\n\n*Fast, high-quality service guaranteed ❤️.*')
+        .setTitle('💎 CyberPulse Management & Ticket Hub 🚀')
+        .setDescription('🛒 **Buy Credits:** Open a private ticket with administration.\n💳 **My Credits:** Check your available balance.\n⚡ **Add Members:** Initialize deployment sequence.\n\n*Fast, high-quality cybernetic service guaranteed ❤️.*')
         .setImage(BANNER_IMAGE_URL)
-        .setFooter({ text: 'Secure Panel v5.0 ⚡' });
+        .setFooter({ text: 'CyberPulse Secure Panel v6.0 ⚡' });
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('btn_buy_credits_ticket').setLabel('Buy Credits').setStyle(ButtonStyle.Success).setEmoji('🛒'),
@@ -316,10 +344,10 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [embed], components: [row] });
     }
 
-    // 3. !gc command -> OWNER ONLY
+    // 3. !gc command -> OWNER & PARTNERS ONLY
     if (command === 'gc') {
-      if (message.author.id !== OWNER_ID) {
-        return message.reply('❌ **Access Denied:** Only the bot owner can issue credits.');
+      if (!hasPrivileges) {
+        return message.reply('❌ **Access Denied:** Owner or Partner clearance required.');
       }
 
       const targetUser = message.mentions.users.first();
@@ -340,25 +368,26 @@ client.on('messageCreate', async (message) => {
       }
 
       userCredit.balance += amount;
+      userCredit.offlineAdded += amount; // Track added offline credits
       await userCredit.save();
 
       const embed = new EmbedBuilder()
         .setColor(0x10b981)
-        .setTitle('📦 Credits Issued!')
-        .setDescription(`🖤 **${amount.toLocaleString()}** credits have been added to <@${targetUser.id}>'s account by the owner!`)
+        .setTitle('📦 CyberPulse Credits Issued! 🚀')
+        .setDescription(`🖤 **${amount.toLocaleString()}** credits have been added to <@${targetUser.id}>'s account!`)
         .addFields(
-          { name: 'Current User Balance:', value: `\`${userCredit.balance} credits\``, inline: false },
-          { name: 'Database Stock Remaining:', value: `\`${totalStock} accounts\``, inline: false }
+          { name: '🌟 Current User Balance:', value: `\`${userCredit.balance} credits\``, inline: false },
+          { name: '📦 Database Stock Remaining:', value: `\`${totalStock} accounts\``, inline: false }
         )
         .setTimestamp();
 
       return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
     }
 
-    // 4. !rc command -> OWNER ONLY
+    // 4. !rc command -> OWNER & PARTNERS ONLY
     if (command === 'rc') {
-      if (message.author.id !== OWNER_ID) {
-        return message.reply('❌ **Access Denied:** Only the bot owner can remove credits.');
+      if (!hasPrivileges) {
+        return message.reply('❌ **Access Denied:** Owner or Partner clearance required.');
       }
 
       const targetUser = message.mentions.users.first();
@@ -373,35 +402,157 @@ client.on('messageCreate', async (message) => {
         userCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
       }
 
+      const deducted = Math.min(userCredit.balance, amount);
       userCredit.balance = Math.max(0, userCredit.balance - amount);
+      userCredit.offlineConsumed += deducted; // Track consumed credits
       await userCredit.save();
 
       const embed = new EmbedBuilder()
         .setColor(0xef4444)
-        .setTitle('🔻 Credits Deducted')
+        .setTitle('🔻 CyberPulse Credits Deducted ⚠️')
         .setDescription(`🖤 **${amount.toLocaleString()}** credits have been removed from <@${targetUser.id}>'s balance!`)
         .addFields(
-          { name: 'New User Balance:', value: `\`${userCredit.balance} credits\``, inline: false }
+          { name: '🌟 New User Balance:', value: `\`${userCredit.balance} credits\``, inline: false }
         )
         .setTimestamp();
 
       return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
     }
 
-    // 5. !resetcredits command -> OWNER ONLY
+    // 5. !resetcredits command -> OWNER & PARTNERS ONLY
     if (command === 'resetcredits') {
-      if (message.author.id !== OWNER_ID) return message.reply('❌ Access Denied.');
+      if (!hasPrivileges) return message.reply('❌ Access Denied.');
       const targetUser = message.mentions.users.first();
       if (!targetUser) return message.reply('❌ Usage: `!resetcredits @user`');
 
-      await UserCredit.findOneAndUpdate({ discordId: targetUser.id }, { balance: 0 }, { upsert: true });
-      return message.reply(`✨ Successfully wiped all credits for <@${targetUser.id}>.`);
+      await UserCredit.findOneAndUpdate({ discordId: targetUser.id }, { balance: 0, offlineAdded: 0, offlineConsumed: 0 }, { upsert: true });
+      return message.reply(`✨ Successfully wiped all credits for <@${targetUser.id}>. 🔄`);
     }
 
-    // 6. !pull command -> OWNER ONLY (Classic manual pull protocol)
+    // 6. !partner & !removepartner -> OWNER ONLY (Strictly Owner)
+    if (command === 'partner') {
+      if (!isOwner) return message.reply('❌ **Access Denied:** Only the absolute owner can assign partners.');
+      const targetUser = message.mentions.users.first();
+      if (!targetUser) return message.reply('⚠️ **Usage:** `!partner @user`');
+
+      await Partner.findOneAndUpdate({ discordId: targetUser.id }, { discordId: targetUser.id }, { upsert: true });
+      return message.reply(`🤝 Successfully appointed <@${targetUser.id}> as a CyberPulse **Partner** with full administrative command permissions! ✨`);
+    }
+
+    if (command === 'removepartner') {
+      if (!isOwner) return message.reply('❌ **Access Denied:** Only the absolute owner can remove partners.');
+      const targetUser = message.mentions.users.first();
+      if (!targetUser) return message.reply('⚠️ **Usage:** `!removepartner @user`');
+
+      const result = await Partner.findOneAndDelete({ discordId: targetUser.id });
+      if (!result) return message.reply(`⚠️ <@${targetUser.id}> was not found in the partner registry.`);
+      return message.reply(`🚫 Successfully revoked partner privileges from <@${targetUser.id}>.`);
+    }
+
+    // 7. !reseller & !removereseller -> OWNER & PARTNERS ONLY
+    if (command === 'reseller') {
+      if (!hasPrivileges) return message.reply('❌ **Access Denied:** Owner or Partner clearance required.');
+      const targetUser = message.mentions.users.first();
+      if (!targetUser) return message.reply('⚠️ **Usage:** `!reseller @user`');
+
+      await Reseller.findOneAndUpdate({ discordId: targetUser.id }, { discordId: targetUser.id }, { upsert: true });
+      return message.reply(`💼 Successfully registered <@${targetUser.id}> as an official CyberPulse **Reseller**! 🌟`);
+    }
+
+    if (command === 'removereseller') {
+      if (!hasPrivileges) return message.reply('❌ **Access Denied:** Owner or Partner clearance required.');
+      const targetUser = message.mentions.users.first();
+      if (!targetUser) return message.reply('⚠️ **Usage:** `!removereseller @user`');
+
+      const result = await Reseller.findOneAndDelete({ discordId: targetUser.id });
+      if (!result) return message.reply(`⚠️ <@${targetUser.id}> was not found in the reseller registry.`);
+      return message.reply(`🚫 Successfully removed <@${targetUser.id}> from the reseller registry.`);
+    }
+
+    // 8. !resale @user <amount> -> RESELLERS, PARTNERS & OWNER CAN TRANSFER CREDITS
+    if (command === 'resale') {
+      const targetUser = message.mentions.users.first();
+      const amount = parseInt(args[1], 10);
+
+      if (!targetUser || isNaN(amount) || amount <= 0) {
+        return message.reply('⚠️ **Usage:** `!resale @user <amount>`');
+      }
+
+      if (targetUser.id === message.author.id) {
+        return message.reply('❌ You cannot transfer credits to yourself!');
+      }
+
+      // Check if user is an authorized reseller, partner, or owner
+      const isReseller = await Reseller.findOne({ discordId: message.author.id });
+      if (!isReseller && !hasPrivileges) {
+        return message.reply('❌ **Access Denied:** You must be a registered CyberPulse reseller or partner to execute credit transfers.');
+      }
+
+      let senderCredit = await UserCredit.findOne({ discordId: message.author.id });
+      if (!senderCredit || senderCredit.balance < amount) {
+        return message.reply(`❌ Insufficient balance. You attempted to transfer **${amount}** credits, but your balance is **${senderCredit ? senderCredit.balance : 0}**.`);
+      }
+
+      // Deduct from sender and track consumption
+      senderCredit.balance -= amount;
+      senderCredit.offlineConsumed += amount;
+      await senderCredit.save();
+
+      // Add to recipient and track addition
+      let recipientCredit = await UserCredit.findOne({ discordId: targetUser.id });
+      if (!recipientCredit) {
+        recipientCredit = new UserCredit({ discordId: targetUser.id, balance: 0 });
+      }
+      recipientCredit.balance += amount;
+      recipientCredit.offlineAdded += amount;
+      await recipientCredit.save();
+
+      const embed = new EmbedBuilder()
+        .setColor(0x38bdf8)
+        .setTitle('💼 CyberPulse Credit Resale Transfer ⚡')
+        .setDescription(`✨ Successfully transferred **${amount.toLocaleString()}** credits from <@${message.author.id}> to <@${targetUser.id}>!`)
+        .addFields(
+          { name: '📤 Your Remaining Balance', value: `\`${senderCredit.balance} credits\``, inline: true },
+          { name: '📥 Recipient Balance', value: `\`${recipientCredit.balance} credits\``, inline: true }
+        )
+        .setTimestamp();
+
+      return message.reply({ content: `<@${targetUser.id}>`, embeds: [embed] });
+    }
+
+    // 9. !irbal / !rbal -> EXACT PUNISHER RESELLER BALANCE STYLE
+    if (command === 'irbal' || command === 'rbal') {
+      const targetUser = message.mentions.users.first() || message.author;
+      
+      const isReseller = await Reseller.findOne({ discordId: targetUser.id });
+      const isPart = await Partner.findOne({ discordId: targetUser.id });
+      const isUsrOwner = targetUser.id === OWNER_ID;
+
+      if (!isReseller && !isPart && !isUsrOwner && targetUser.id !== message.author.id) {
+        return message.reply('❌ That user is not registered as an active reseller.');
+      }
+
+      let uc = await UserCredit.findOne({ discordId: targetUser.id });
+      if (!uc) uc = { balance: 0, onlineAdded: 0, offlineAdded: 0, reactionAdded: 0, onlineConsumed: 0, offlineConsumed: 0, reactionConsumed: 0 };
+
+      // Get user avatar or fallback to a cyberpunk default graphic
+      const avatarUrl = targetUser.displayAvatarURL({ dynamic: true, size: 256 }) || BANNER_IMAGE_URL;
+
+      const embed = new EmbedBuilder()
+        .setColor(0x2b2d31)
+        .setAuthor({ name: `Reseller Balance — ${targetUser.username}`, iconURL: 'https://cdn.discordapp.com/emojis/841261569083815946.webp?size=96' })
+        .setDescription(`**Status:** ✅ Active\n\n🟢 **Online Members:** 0\n🔘 **Offline Members:** ${uc.balance.toLocaleString()}\n🎉 **Reaction Members:** 0\n\n──────────────────────────────\n\n📈 **Online Added:** 0\n📈 **Offline Added:** ${uc.offlineAdded.toLocaleString()}\n📈 **Reaction Added:** 0\n📉 **Online Consumed:** 0\n📉 **Offline Consumed:** ${uc.offlineConsumed.toLocaleString()}\n📉 **Reaction Consumed:** 0`)
+        .setThumbnail(avatarUrl)
+        .setFooter({ text: 'CyberPulse • Reseller' })
+        .setTimestamp();
+
+      return message.reply({ embeds: [embed] });
+    }
+
+    // 10. !pull command -> OWNER & PARTNERS ONLY (Classic manual pull protocol)
     if (command === 'pull') {
-      if (message.author.id !== OWNER_ID) {
-        return message.reply('❌ **Access Denied:** Only the bot owner can run manual pull protocols.');
+      if (!hasPrivileges) {
+        return message.reply('❌ **Access Denied:** Owner or Partner clearance required to run manual pull protocols.');
       }
 
       const targetGuildId = args[0];
@@ -410,13 +561,13 @@ client.on('messageCreate', async (message) => {
       }
 
       const pullLimit = args[1] ? parseInt(args[1], 10) : null;
-      const statusMsg = await message.reply(`🚀 **Owner Protocol:** Synchronizing database tokens into target \`${targetGuildId}\`...\n*Please wait...*`);
+      const statusMsg = await message.reply(`🚀 **CyberPulse Protocol:** Synchronizing database tokens into target \`${targetGuildId}\`...\n*Please wait...*`);
 
       try {
         const targetGuild = await client.guilds.fetch(targetGuildId);
         const verifiedUsers = await VerifiedUser.find({});
         if (verifiedUsers.length === 0) {
-          return statusMsg.edit('⚠️ **Abyssal Warning:** No verified users found in MongoDB storage.');
+          return statusMsg.edit('⚠️ **CyberPulse Warning:** No verified users found in storage.');
         }
 
         let successfulJoins = 0;
@@ -444,7 +595,7 @@ client.on('messageCreate', async (message) => {
         const timeTaken = ((Date.now() - startTimePull) / 1000).toFixed(1);
         const reportEmbed = new EmbedBuilder()
           .setColor(0x10b981)
-          .setTitle('🔥 ABYSSAL // Manual Pull Execution Report')
+          .setTitle('🔥 CYBERPULSE // Manual Pull Execution Report 🚀')
           .addFields(
             { name: '🎯 Target Guild ID', value: `\`${targetGuildId}\``, inline: false },
             { name: '✅ Successful Joins', value: `\`${successfulJoins}\``, inline: true },
@@ -460,17 +611,17 @@ client.on('messageCreate', async (message) => {
       }
     }
 
-    // 7. !broadcast command -> OWNER ONLY
+    // 11. !broadcast command -> OWNER & PARTNERS ONLY
     if (command === 'broadcast') {
-      if (message.author.id !== OWNER_ID) return message.reply('❌ Access Denied.');
+      if (!hasPrivileges) return message.reply('❌ Access Denied.');
       const broadcastText = args.join(' ');
       if (!broadcastText) return message.reply('❌ Usage: `!broadcast <message>`');
 
       const embed = new EmbedBuilder()
         .setColor(0x7000ff)
-        .setTitle('📢 ABYSSAL // Network Broadcast')
+        .setTitle('📢 CYBERPULSE // Network Broadcast ⚡')
         .setDescription(broadcastText)
-        .setFooter({ text: 'Official Announcement' })
+        .setFooter({ text: 'CyberPulse Official Announcement' })
         .setTimestamp();
 
       let count = 0;
@@ -485,7 +636,7 @@ client.on('messageCreate', async (message) => {
       return message.reply(`📡 Broadcast sent to **${count}** server channels.`);
     }
 
-    // 8. !bal command
+    // 12. !bal command
     if (command === 'bal' || command === 'balance') {
       const targetUser = message.mentions.users.first() || message.author;
       let uc = await UserCredit.findOne({ discordId: targetUser.id });
@@ -493,7 +644,7 @@ client.on('messageCreate', async (message) => {
 
       const embed = new EmbedBuilder()
         .setColor(0x38bdf8)
-        .setTitle(`💳 Balance Overview — ${targetUser.username}`)
+        .setTitle(`💳 Balance Overview — ${targetUser.username} ⚡`)
         .addFields(
           { name: 'Available Pull Credits', value: `\`${uc.balance}\``, inline: true }
         )
@@ -502,23 +653,23 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [embed] });
     }
 
-    // 9. !stock command
+    // 13. !stock command
     if (command === 'stock') {
       const totalStock = await VerifiedUser.countDocuments();
       const embed = new EmbedBuilder()
         .setColor(0x8b5cf6)
-        .setTitle('📦 Database Stock Overview')
+        .setTitle('📦 CyberPulse Stock Overview ⚡')
         .addFields(
           { name: '⚫ Total Verified Accounts', value: `\`${totalStock}\``, inline: true },
           { name: '⚡ System Status', value: '`ONLINE // READY`', inline: false }
         )
-        .setFooter({ text: 'Abyssal Inventory Engine' })
+        .setFooter({ text: 'CyberPulse Inventory Engine' })
         .setTimestamp();
 
       return message.reply({ embeds: [embed] });
     }
 
-    // 10. !stats command
+    // 14. !stats command
     if (command === 'stats') {
       const totalUsers = await VerifiedUser.countDocuments();
       const uptimeMs = Date.now() - startTime;
@@ -539,7 +690,7 @@ client.on('messageCreate', async (message) => {
 
       const embed = new EmbedBuilder()
         .setColor(0x10b981)
-        .setTitle('📊 ABYSSAL // Neural Telemetry Matrix')
+        .setTitle('📊 CYBERPULSE // Neural Telemetry Matrix 🚀')
         .setDescription('💎 Real-time diagnostic metrics across database nodes and active sessions.')
         .addFields(
           { name: '🧬 Total Verified Users', value: `\`${totalUsers}\``, inline: false },
@@ -550,9 +701,9 @@ client.on('messageCreate', async (message) => {
           { name: '📡 API Latency', value: `\`${client.ws.ping}ms\``, inline: true },
           { name: '💻 RAM Heap', value: `\`${memoryUsageMB} MB\``, inline: true },
           { name: '⏳ Core Uptime', value: `\`${uptimeHours}h ${uptimeMins}m\``, inline: false },
-          { name: '⚡ Database Status', value: '`Connected & Stable (Atlas)`', inline: false }
+          { name: '⚡ Database Status', value: '`Connected & Stable`', inline: false }
         )
-        .setFooter({ text: 'ABYSSAL MANAGEMENT • Secure Telemetry v3.5' })
+        .setFooter({ text: 'CYBERPULSE MANAGEMENT • Secure Telemetry v6.0' })
         .setTimestamp();
 
       return message.reply({ embeds: [embed] });
@@ -608,8 +759,8 @@ client.on('interactionCreate', async (interaction) => {
 
         const ticketEmbed = new EmbedBuilder()
           .setColor(0x7000ff)
-          .setTitle('🛒 Credit Purchase Ticket')
-          .setDescription(`Welcome <@${interaction.user.id}>!\n\nThis is your private secure channel with the bot owner (<@${OWNER_ID}>).\nState your inquiry or how many credits you wish to acquire.`)
+          .setTitle('🛒 CyberPulse Credit Purchase Ticket ⚡')
+          .setDescription(`Welcome <@${interaction.user.id}>!\n\nThis is your private secure channel with administration (<@${OWNER_ID}>).\nState your inquiry or how many credits you wish to acquire.`)
           .setTimestamp();
 
         const closeRow = new ActionRowBuilder().addComponents(
@@ -630,7 +781,7 @@ client.on('interactionCreate', async (interaction) => {
         let uc = await UserCredit.findOne({ discordId: interaction.user.id });
         if (!uc) uc = { balance: 0 };
         return interaction.reply({
-          content: `💳 **Your Balance:** \`${uc.balance}\` credits`,
+          content: `💳 **Your Balance:** \`${uc.balance}\` credits ⚡`,
           ephemeral: true
         });
       }
@@ -638,7 +789,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.customId === 'btn_add_members') {
         const modal = new ModalBuilder()
           .setCustomId('modal_server_id')
-          .setTitle('Scan');
+          .setTitle('CyberPulse Scan 🚀');
 
         const serverIdInput = new TextInputBuilder()
           .setCustomId('input_server_id')
@@ -666,6 +817,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         uc.balance -= session.quantity;
+        uc.offlineConsumed += session.quantity; // Track consumption
         await uc.save();
 
         await interaction.update({ content: `Adding members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation: \`${session.opId}\``, embeds: [], components: [] });
@@ -697,7 +849,7 @@ client.on('interactionCreate', async (interaction) => {
           const timeTaken = ((Date.now() - startTimePull) / 1000).toFixed(1);
           const reportEmbed = new EmbedBuilder()
             .setColor(0x10b981)
-            .setTitle('✅ Members added successfully!')
+            .setTitle('✅ Members added successfully! 🚀')
             .addFields(
               { name: '📊 Accounts Added', value: `\`${successful} accounts\``, inline: true },
               { name: '💳 Remaining Balance', value: `\`${uc.balance} credits\``, inline: true },
@@ -743,7 +895,7 @@ client.on('interactionCreate', async (interaction) => {
         );
 
         return interaction.reply({ 
-          content: `Please select the token type you want to buy`, 
+          content: `Please select the token type you want to buy ⚡`, 
           components: [row1, row2], 
           ephemeral: true 
         });
@@ -781,7 +933,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const confirmEmbed = new EmbedBuilder()
           .setColor(0x10b981)
-          .setTitle(`Confirm Addition — ${session.tokenType}`)
+          .setTitle(`Confirm Addition — ${session.tokenType} ⚡`)
           .addFields(
             { name: '🏰 Server', value: `${guildName}\n\`${session.serverId}\``, inline: true },
             { name: '👥 Current Members', value: '0', inline: true },
@@ -812,7 +964,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const modal = new ModalBuilder()
           .setCustomId('modal_quantity')
-          .setTitle('Buy Members');
+          .setTitle('CyberPulse Buy Members 🚀');
 
         const qtyInput = new TextInputBuilder()
           .setCustomId('input_quantity')
