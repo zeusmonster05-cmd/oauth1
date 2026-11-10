@@ -1,20 +1,18 @@
 {
-  "name": "oauth-bot1",
-  "version": "1.0.0",
-  "description": "",
+  "name": "cyberpulse-system",
+  "version": "7.0.0",
+  "description": "CyberPulse Discord & Web Management Platform",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "axios": "^1.21.0",
-    "discord.js": "^14.28.0",
-    "dotenv": "^18.0.9",
-    "express": "^5.3.0",
-    "mongoose": "^9.11.4"
+    "axios": "^1.7.0",
+    "discord.js": "^14.14.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "mongoose": "^8.3.0",
+    "socket.io": "^4.7.5"
   }
 }
