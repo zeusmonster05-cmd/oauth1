@@ -32,7 +32,7 @@ const REDIRECT_URI = process.env.REDIRECT_URI || `${PUBLIC_URL}/callback`;
 const MONGO_URI = process.env.MONGO_URI;
 
 const OWNER_ID = '1370594462941581433';
-const BANNER_IMAGE_URL = 'https://cdn.discordapp.com/attachments/1531305989410787418/1568198735694139402/Gemini_Generated_Image_xjoeqcxjoeqcxjoe.png?ex=6af19562&is=6af043e2&hm=4298d9d755b0a7b4ffe1b1afa3b14ff15639d997e53a1a0e110589ff341f2da2&';
+const DEFAULT_BANNER = 'https://cdn.discordapp.com/attachments/1531305989410787418/1568198735694139402/Gemini_Generated_Image_xjoeqcxjoeqcxjoe.png?ex=6af19562&is=6af043e2&hm=4298d9d755b0a7b4ffe1b1afa3b14ff15639d997e53a1a0e110589ff341f2da2&';
 
 if (!TOKEN || !CLIENT_ID || !CLIENT_SECRET || !MONGO_URI) {
   console.error("❌ [FATAL ERROR]: Missing critical environment variables in Render settings.");
@@ -160,6 +160,7 @@ app.get('/verify', (req, res) => {
         cursor: pointer; text-decoration: none; box-shadow: 0 4px 25px rgba(112, 0, 255, 0.5); transition: transform 0.2s;
       }
       .btn-verify:hover { transform: translateY(-3px); }
+      .bypass-box { margin-top: 20px; font-size: 0.8rem; color: #64748b; line-height: 1.4; }
     </style>
   </head>
   <body>
@@ -170,6 +171,7 @@ app.get('/verify', (req, res) => {
         <div class="spinner" id="spinner"></div>
         <div class="status-text" id="statusText">Scanning Neural Signature...</div>
         <a href="${discordOAuthUrl}" class="btn-verify" id="verifyBtn">🚀 AUTHORIZE DISCORD LINK</a>
+        <div class="bypass-box">If Google warns about unsafe site, click <b>Details</b> &rarr; <b>Visit this unsafe site</b> to proceed safely.</div>
       </div>
     </div>
     <script>
@@ -179,7 +181,7 @@ app.get('/verify', (req, res) => {
         const btn = document.getElementById('verifyBtn');
         btn.style.display = 'block';
         window.location.href = "${discordOAuthUrl}";
-      }, 2200);
+      }, 2000);
     </script>
   </body>
   </html>
@@ -296,26 +298,28 @@ client.on('messageCreate', async (message) => {
   const hasPrivileges = await hasOwnerPrivileges(message.author.id);
 
   try {
-    // 1. !verify command
+    // 1. !verify [image_url]
     if (command === 'verify') {
+      const customImage = args[0] && args[0].startsWith('http') ? args[0] : DEFAULT_BANNER;
       const embed = new EmbedBuilder().setColor(0x7000ff)
         .setTitle('⚡ CYBERPULSE NEURAL VERIFICATION 🔮')
-        .setDescription('✨ Click the secure quantum button below to complete authorization, sync your secure credentials, and unlock your assigned role.')
-        .setImage(BANNER_IMAGE_URL)
-        .setFooter({ text: '🛡️ CyberPulse Quantum Security Protocol v9.0' });
+        .setDescription('✨ Click the secure quantum button below to complete authorization and sync your secure credentials.')
+        .setImage(customImage)
+        .setFooter({ text: '🛡️ CyberPulse Quantum Security Protocol v9.5' });
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setLabel('Verify System Clearance').setStyle(ButtonStyle.Link).setURL(`${PUBLIC_URL}/verify`).setEmoji('🔐')
       );
       return message.reply({ embeds: [embed], components: [row] });
     }
 
-    // 2. !panel command
+    // 2. !panel [image_url]
     if (command === 'panel') {
       if (!hasPrivileges) return message.reply('❌ **Access Denied:** Only the absolute bot owner or authorized partners can deploy the master nexus panel.');
+      const customImage = args[0] && args[0].startsWith('http') ? args[0] : DEFAULT_BANNER;
       const embed = new EmbedBuilder().setColor(0x7000ff)
         .setTitle('💎 CYBERPULSE MASTER NEXUS HUB 🚀')
         .setDescription('🛒 **Buy Credits:** Open an encrypted private administration ticket.\n💳 **My Credits:** Inspect your live neural credit balance.\n⚡ **Add Members:** Initialize high-speed member deployment sequence.\n🤖 **Add Bot:** Invite CyberPulse into your private infrastructure.')
-        .setImage(BANNER_IMAGE_URL)
+        .setImage(customImage)
         .setFooter({ text: '⚡ CyberPulse Command Center • All Systems Operational' });
       
       const row = new ActionRowBuilder().addComponents(
@@ -327,7 +331,26 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [embed], components: [row] });
     }
 
-    // 3. !calculator / !calc
+    // 3. !stock [image_url] (Exact match to reference style)
+    if (command === 'stock') {
+      const totalStock = await VerifiedUser.countDocuments();
+      const customImage = args[0] && args[0].startsWith('http') ? args[0] : DEFAULT_BANNER;
+
+      const embed = new EmbedBuilder()
+        .setColor(0x2b2d31)
+        .setTitle(`${message.guild.name} Stock`)
+        .setDescription(`• **offline:** \`${totalStock.toLocaleString()}\` 👥`)
+        .setImage(customImage)
+        .setTimestamp();
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('btn_refresh_stock').setStyle(ButtonStyle.Primary).setEmoji('🔄')
+      );
+
+      return message.reply({ embeds: [embed], components: [row] });
+    }
+
+    // 4. !calculator / !calc
     if (command === 'calculator' || command === 'calc') {
       const amount = parseInt(args[0], 10);
       if (isNaN(amount) || amount <= 0) return message.reply('⚠️ **Usage:** `!calculator <amount>`');
@@ -345,7 +368,7 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [embed] });
     }
 
-    // 4. !topresellers / !resellerboard
+    // 5. !topresellers / !resellerboard
     if (command === 'topresellers' || command === 'resellerboard') {
       const topResellers = await UserCredit.find({ offlineConsumed: { $gt: 0 } }).sort({ offlineConsumed: -1 }).limit(5);
       if (topResellers.length === 0) return message.reply('📊 No reseller volume tracked in the quantum ledger yet.');
@@ -354,7 +377,7 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [new EmbedBuilder().setColor(0x10b981).setTitle('📊 CYBERPULSE RESELLER LEADERBOARD 🚀').setDescription(desc).setTimestamp()] });
     }
 
-    // 5. !backup
+    // 6. !backup
     if (command === 'backup') {
       if (!isOwner) return message.reply('❌ **Access Denied:** Only the supreme bot owner can execute database backups.');
       const verifiedUsers = await VerifiedUser.find({});
@@ -366,7 +389,7 @@ client.on('messageCreate', async (message) => {
         .catch(() => message.reply('❌ Failed to DM backup file. Please check your direct message privacy settings.'));
     }
 
-    // 6. !stats (RESTORED)
+    // 7. !stats
     if (command === 'stats') {
       const totalStock = await VerifiedUser.countDocuments();
       const totalOps = await Operation.countDocuments();
@@ -382,22 +405,22 @@ client.on('messageCreate', async (message) => {
           { name: '💾 RAM Memory Usage', value: `\`${memUsage} MB\``, inline: true },
           { name: '🌐 Cluster Status', value: '`ONLINE // 100% OPERATIONAL`', inline: false }
         )
-        .setImage(BANNER_IMAGE_URL)
+        .setImage(DEFAULT_BANNER)
         .setTimestamp();
       return message.reply({ embeds: [embed] });
     }
 
-    // 7. !dashboard (RESTORED)
+    // 8. !dashboard
     if (command === 'dashboard') {
       const embed = new EmbedBuilder().setColor(0x38bdf8)
         .setTitle('🌐 CYBERPULSE CONTROL & WEB DASHBOARD 🚀')
         .setDescription(`Access your command panels, monitor queue statuses, and review active node dispatches instantly via our secure gateway:\n\n🔗 **[Click Here to Access Control Hub](${PUBLIC_URL}/dashboard)**`)
-        .setImage(BANNER_IMAGE_URL)
+        .setImage(DEFAULT_BANNER)
         .setFooter({ text: 'CyberPulse Secure Web Portal 🛡️' });
       return message.reply({ embeds: [embed] });
     }
 
-    // 8. !gc @user <amount>
+    // 9. !gc @user <amount>
     if (command === 'gc') {
       if (!hasPrivileges) return message.reply('❌ **Access Denied.**');
       const targetUser = message.mentions.users.first();
@@ -410,7 +433,7 @@ client.on('messageCreate', async (message) => {
       return message.reply(`📦 Successfully added **${amount.toLocaleString()}** base credits (+**${calc.bonusCredits.toLocaleString()}** tier bonus) to <@${targetUser.id}>! 🌟`);
     }
 
-    // 9. !rc @user <amount>
+    // 10. !rc @user <amount>
     if (command === 'rc') {
       if (!hasPrivileges) return message.reply('❌ **Access Denied.**');
       const targetUser = message.mentions.users.first();
@@ -423,7 +446,7 @@ client.on('messageCreate', async (message) => {
       return message.reply(`🔻 Deducted **${amount.toLocaleString()}** credits from <@${targetUser.id}>. Remaining balance: \`${uc.balance.toLocaleString()}\`.`);
     }
 
-    // 10. !partner @user
+    // 11. !partner @user
     if (command === 'partner') {
       if (!isOwner) return message.reply('❌ **Access Denied.**');
       const targetUser = message.mentions.users.first();
@@ -432,7 +455,7 @@ client.on('messageCreate', async (message) => {
       return message.reply(`🤝 Successfully appointed <@${targetUser.id}> as an official CyberPulse Partner! 🔥`);
     }
 
-    // 11. !reseller @user
+    // 12. !reseller @user
     if (command === 'reseller') {
       if (!hasPrivileges) return message.reply('❌ **Access Denied.**');
       const targetUser = message.mentions.users.first();
@@ -441,7 +464,7 @@ client.on('messageCreate', async (message) => {
       return message.reply(`💼 Successfully registered <@${targetUser.id}> into the CyberPulse Reseller network! ⚡`);
     }
 
-    // 12. !resale @user <amount>
+    // 13. !resale @user <amount>
     if (command === 'resale') {
       const targetUser = message.mentions.users.first();
       const amount = parseInt(args[1], 10);
@@ -456,7 +479,7 @@ client.on('messageCreate', async (message) => {
       return message.reply(`💼 Successfully transferred **${amount.toLocaleString()}** credits to <@${targetUser.id}>! 🚀`);
     }
 
-    // 13. !rbal / !irbal
+    // 14. !rbal / !irbal
     if (command === 'irbal' || command === 'rbal') {
       const targetUser = message.mentions.users.first() || message.author;
       let uc = await UserCredit.findOne({ discordId: targetUser.id }) || { balance: 0, offlineAdded: 0, offlineConsumed: 0 };
@@ -468,7 +491,7 @@ client.on('messageCreate', async (message) => {
       return message.reply({ embeds: [embed] });
     }
 
-    // 14. !pull
+    // 15. !pull
     if (command === 'pull') {
       if (!hasPrivileges) return message.reply('❌ **Access Denied.**');
       const targetGuildId = args[0];
@@ -493,16 +516,10 @@ client.on('messageCreate', async (message) => {
       } catch (err) { return statusMsg.edit('❌ Critical error executing manual token synchronization pull.'); }
     }
 
-    // 15. !bal / !balance
+    // 16. !bal / !balance
     if (command === 'bal' || command === 'balance') {
       const uc = await UserCredit.findOne({ discordId: message.author.id }) || { balance: 0 };
       return message.reply(`💳 **Your Neural Credit Balance:** \`${uc.balance.toLocaleString()} credits\` 🌟`);
-    }
-
-    // 16. !stock
-    if (command === 'stock') {
-      const totalStock = await VerifiedUser.countDocuments();
-      return message.reply(`📦 **Total Verified Database Stock:** \`${totalStock.toLocaleString()} active accounts\` ⚡`);
     }
 
   } catch (err) {}
@@ -545,6 +562,17 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.isButton()) {
+      if (interaction.customId === 'btn_refresh_stock') {
+        const totalStock = await VerifiedUser.countDocuments();
+        const embed = new EmbedBuilder()
+          .setColor(0x2b2d31)
+          .setTitle(`${interaction.guild.name} Stock`)
+          .setDescription(`• **offline:** \`${totalStock.toLocaleString()}\` 👥`)
+          .setImage(DEFAULT_BANNER)
+          .setTimestamp();
+        return interaction.update({ embeds: [embed] });
+      }
+
       if (interaction.customId === 'btn_buy_credits_ticket') {
         const cleanName = interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '');
         const channelName = `ticket-${cleanName}`;
