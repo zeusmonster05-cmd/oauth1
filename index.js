@@ -15,7 +15,8 @@ const {
   SlashCommandBuilder,
   REST,
   Routes,
-  AttachmentBuilder
+  AttachmentBuilder,
+  ActivityType
 } = require('discord.js');
 const express = require('express');
 const http = require('http');
@@ -97,6 +98,15 @@ const Operation = mongoose.model('Operation', operationSchema);
 
 const activeSessions = new Map();
 
+// Random Jokes & Quotes for Stock Refreshes
+const cyberQuotes = [
+  "💡 *\"In the grid, data is currency, and intelligence is power.\"*",
+  "🚀 *\"The future belongs to those who build the infrastructure.\"*",
+  "⚡ *\"Stay sharp, operative. The mainframe never sleeps.\"*",
+  "🔮 *\"Why do programmers prefer dark mode? Because light attracts bugs!\"*",
+  "🛡️ *\"There is no cloud, just someone else's computer. Keep your tokens safe.\"*"
+];
+
 async function hasOwnerPrivileges(userId) {
   if (userId === OWNER_ID) return true;
   const isPartner = await Partner.findOne({ discordId: userId });
@@ -120,7 +130,6 @@ const app = express();
 const server = http.createServer(app);
 app.use(express.json());
 
-// Verification Landing Screen & OAuth Route
 app.get('/verify', (req, res) => {
   const discordOAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
   
@@ -189,7 +198,6 @@ app.get('/verify', (req, res) => {
   res.send(loadingScreenHtml);
 });
 
-// OAuth Callback Route
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
   if (!code) return res.status(400).send('❌ Authorization Protocol Failed.');
@@ -256,6 +264,13 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 client.once('clientReady', async () => {
   console.log(`🤖 [DISCORD BOT] Online and locked in as ${client.user.tag}!`);
+  
+  // Set Purple Streaming Status
+  client.user.setPresence({
+    activities: [{ name: 'CyberPulse Global Network ⚡', type: ActivityType.Streaming, url: 'https://twitch.tv/discord' }],
+    status: 'online'
+  });
+
   try { await rest.put(Routes.applicationCommands(CLIENT_ID), { body: slashCommands }); } catch (err) {}
 });
 
@@ -331,7 +346,7 @@ client.on('messageCreate', async (message) => {
       return message.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // 3. !stock [image_url]
+    // 3. !stock [image_url] (Clean stock layout without telemetry)
     if (command === 'stock') {
       const totalStock = await VerifiedUser.countDocuments();
       const customImage = args[0] && args[0].startsWith('http') ? args[0] : DEFAULT_BANNER;
@@ -339,7 +354,7 @@ client.on('messageCreate', async (message) => {
       const embed = new EmbedBuilder()
         .setColor(0x2b2d31)
         .setTitle(`💀 CYBERPULSE SERVER STOCK ⚡`)
-        .setDescription(`\`\`\`yaml\n[ NEURAL DATABASE TELEMETRY ]\n\`\`\`\n• 👥 **offline:** \`${totalStock.toLocaleString()}\``)
+        .setDescription(`• 👥 **offline:** \`${totalStock.toLocaleString()}\``)
         .setImage(customImage)
         .setTimestamp();
 
@@ -522,9 +537,7 @@ client.on('messageCreate', async (message) => {
       return message.channel.send(`💳 **Your Neural Credit Balance:** \`${uc.balance.toLocaleString()} credits\` 🌟`);
     }
 
-    // ==================== NEW CRAZY COMMANDS ====================
-
-    // 17. !audit / !serveraudit (New Command 1)
+    // 17. !audit / !serveraudit
     if (command === 'audit' || command === 'serveraudit') {
       const membersCount = message.guild.memberCount;
       const rolesCount = message.guild.roles.cache.size;
@@ -545,7 +558,7 @@ client.on('messageCreate', async (message) => {
       return message.channel.send({ embeds: [embed] });
     }
 
-    // 18. !cyberduel @user <amount> (New Command 2)
+    // 18. !cyberduel @user <amount>
     if (command === 'cyberduel' || command === 'duel') {
       const targetUser = message.mentions.users.first();
       const amount = parseInt(args[1], 10);
@@ -576,7 +589,7 @@ client.on('messageCreate', async (message) => {
       return message.channel.send({ embeds: [embed] });
     }
 
-    // 19. !matrix (New Command 3)
+    // 19. !matrix
     if (command === 'matrix' || command === 'matrixstream') {
       const embed = new EmbedBuilder().setColor(0x10b981)
         .setTitle('🔮 CYBERPULSE HOLOGRAPHIC MATRIX STREAM ⚡')
@@ -587,7 +600,7 @@ client.on('messageCreate', async (message) => {
       return message.channel.send({ embeds: [embed] });
     }
 
-    // 20. !richboard (New Command 4)
+    // 20. !richboard
     if (command === 'richboard' || command === 'richest') {
       const topRich = await UserCredit.find({ balance: { $gt: 0 } }).sort({ balance: -1 }).limit(5);
       if (topRich.length === 0) return message.channel.send('📊 No credit balances recorded yet.');
@@ -638,10 +651,12 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton()) {
       if (interaction.customId === 'btn_refresh_stock') {
         const totalStock = await VerifiedUser.countDocuments();
+        const randomQuote = cyberQuotes[Math.floor(Math.random() * cyberQuotes.length)];
+        
         const embed = new EmbedBuilder()
           .setColor(0x2b2d31)
           .setTitle(`💀 CYBERPULSE SERVER STOCK ⚡`)
-          .setDescription(`\`\`\`yaml\n[ NEURAL DATABASE TELEMETRY ]\n\`\`\`\n• 👥 **offline:** \`${totalStock.toLocaleString()}\``)
+          .setDescription(`• 👥 **offline:** \`${totalStock.toLocaleString()}\`\n\n${randomQuote}`)
           .setImage(DEFAULT_BANNER)
           .setTimestamp();
         return interaction.update({ embeds: [embed] });
