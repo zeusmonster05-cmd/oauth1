@@ -105,9 +105,9 @@ async function hasOwnerPrivileges(userId) {
 
 function calculatePrice(quantity) {
   let bonusPercent = 0;
-  let tierName = '🌌 Standard Tier';
+  let tierName = '🌌 Standard Quantum Tier';
   if (quantity >= 10000) { bonusPercent = 15; tierName = '💎 Enterprise Nexus Tier'; }
-  else if (quantity >= 2500) { bonusPercent = 5; tierName = '⚡ Pro Quantum Tier'; }
+  else if (quantity >= 2500) { bonusPercent = 5; tierName = '⚡ Pro Overdrive Tier'; }
   else if (quantity >= 500) { bonusPercent = 1; tierName = '🚀 Starter Pulse Tier'; }
 
   const bonusCredits = Math.floor((quantity * bonusPercent) / 100);
@@ -166,7 +166,7 @@ app.get('/verify', (req, res) => {
   <body>
     <div class="container">
       <div class="card">
-        <h1 class="title">⚡ CYBERPULSE GATEWAY</h1>
+        <h1 class="title">⚡ CYBERPULSE // GATEWAY</h1>
         <p class="subtitle">Initializing quantum encrypted handshake...</p>
         <div class="spinner" id="spinner"></div>
         <div class="status-text" id="statusText">Scanning Neural Signature...</div>
@@ -305,7 +305,7 @@ client.on('messageCreate', async (message) => {
         .setTitle('⚡ CYBERPULSE NEURAL VERIFICATION 🔮')
         .setDescription('✨ Click the secure quantum button below to complete authorization and sync your secure credentials.')
         .setImage(customImage)
-        .setFooter({ text: '🛡️ CyberPulse Quantum Security Protocol v9.5' });
+        .setFooter({ text: '🛡️ CyberPulse Quantum Security Protocol v10.0' });
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setLabel('Verify System Clearance').setStyle(ButtonStyle.Link).setURL(`${PUBLIC_URL}/verify`).setEmoji('🔐')
       );
@@ -314,10 +314,10 @@ client.on('messageCreate', async (message) => {
 
     // 2. !panel [image_url]
     if (command === 'panel') {
-      if (!hasPrivileges) return message.channel.send('❌ **Access Denied:** Only the absolute bot owner or authorized partners can deploy the master nexus panel.');
+      if (!hasPrivileges) return message.channel.send('❌ **Access Denied:** Only the supreme owner or authorized partners can deploy the master nexus panel.');
       const customImage = args[0] && args[0].startsWith('http') ? args[0] : DEFAULT_BANNER;
       const embed = new EmbedBuilder().setColor(0x7000ff)
-        .setTitle('💎 CYBERPULSE MASTER NEXUS HUB 🚀')
+        .setTitle('💀 CYBERPULSE MASTER NEXUS HUB 🚀')
         .setDescription('🛒 **Buy Credits:** Open an encrypted private administration ticket.\n💳 **My Credits:** Inspect your live neural credit balance.\n⚡ **Add Members:** Initialize high-speed member deployment sequence.\n🤖 **Add Bot:** Invite CyberPulse into your private infrastructure.')
         .setImage(customImage)
         .setFooter({ text: '⚡ CyberPulse Command Center • All Systems Operational' });
@@ -338,8 +338,8 @@ client.on('messageCreate', async (message) => {
 
       const embed = new EmbedBuilder()
         .setColor(0x2b2d31)
-        .setTitle(`📦 ${message.guild.name}'s Server Stock ⚡`)
-        .setDescription(`• **offline:** \`${totalStock.toLocaleString()}\` 👥`)
+        .setTitle(`💀 CYBERPULSE SERVER STOCK ⚡`)
+        .setDescription(`\`\`\`yaml\n[ NEURAL DATABASE TELEMETRY ]\n\`\`\`\n• 👥 **offline:** \`${totalStock.toLocaleString()}\``)
         .setImage(customImage)
         .setTimestamp();
 
@@ -522,6 +522,80 @@ client.on('messageCreate', async (message) => {
       return message.channel.send(`💳 **Your Neural Credit Balance:** \`${uc.balance.toLocaleString()} credits\` 🌟`);
     }
 
+    // ==================== NEW CRAZY COMMANDS ====================
+
+    // 17. !audit / !serveraudit (New Command 1)
+    if (command === 'audit' || command === 'serveraudit') {
+      const membersCount = message.guild.memberCount;
+      const rolesCount = message.guild.roles.cache.size;
+      const channelsCount = message.guild.channels.cache.size;
+      const boostLevel = message.guild.premiumTier;
+      const embed = new EmbedBuilder().setColor(0x10b981)
+        .setTitle('🛡️ CYBERPULSE ADVANCED INFRASTRUCTURE AUDIT ⚡')
+        .setDescription('Executing deep neural security and structural analysis...')
+        .addFields(
+          { name: '👥 Total Nodes (Members)', value: `\`${membersCount.toLocaleString()}\``, inline: true },
+          { name: '🛡️ Role Hierarchy Size', value: `\`${rolesCount}\``, inline: true },
+          { name: '📂 Channel Matrix', value: `\`${channelsCount}\``, inline: true },
+          { name: '🚀 Boost Tier Level', value: `\`Tier ${boostLevel}\``, inline: true },
+          { name: '🔒 Threat Vulnerability', value: '`0% // MAXIMUM SECURITY`', inline: false }
+        )
+        .setImage(DEFAULT_BANNER)
+        .setTimestamp();
+      return message.channel.send({ embeds: [embed] });
+    }
+
+    // 18. !cyberduel @user <amount> (New Command 2)
+    if (command === 'cyberduel' || command === 'duel') {
+      const targetUser = message.mentions.users.first();
+      const amount = parseInt(args[1], 10);
+      if (!targetUser || targetUser.bot || targetUser.id === message.author.id || isNaN(amount) || amount <= 0) {
+        return message.channel.send('⚠️ **Usage:** `!cyberduel @user <amount>` (Cannot duel bots or yourself)');
+      }
+      let challenger = await UserCredit.findOne({ discordId: message.author.id }) || { balance: 0 };
+      let opponent = await UserCredit.findOne({ discordId: targetUser.id }) || { balance: 0 };
+      if (challenger.balance < amount) return message.channel.send('❌ You do not have enough credits to start this duel.');
+      if (opponent.balance < amount) return message.channel.send('❌ Your opponent does not have enough credits to match this duel.');
+
+      const winner = Math.random() < 0.5 ? message.author : targetUser;
+      const loser = winner.id === message.author.id ? targetUser : message.author;
+
+      let winCreds = await UserCredit.findOne({ discordId: winner.id });
+      let loseCreds = await UserCredit.findOne({ discordId: loser.id });
+
+      winCreds.balance += amount;
+      loseCreds.balance = Math.max(0, loseCreds.balance - amount);
+      await winCreds.save();
+      await loseCreds.save();
+
+      const embed = new EmbedBuilder().setColor(0xf59e0b)
+        .setTitle('⚔️ CYBERPULSE QUANTUM DUEL ARENA ⚡')
+        .setDescription(`A high-stakes cyber duel was executed between <@${message.author.id}> and <@${targetUser.id}>!\n\n🏆 **Winner:** <@${winner.id}>\n💀 **Defeated:** <@${loser.id}>\n💰 **Wager Staked:** \`${amount.toLocaleString()} Credits\``)
+        .setImage(DEFAULT_BANNER)
+        .setTimestamp();
+      return message.channel.send({ embeds: [embed] });
+    }
+
+    // 19. !matrix (New Command 3)
+    if (command === 'matrix' || command === 'matrixstream') {
+      const embed = new EmbedBuilder().setColor(0x10b981)
+        .setTitle('🔮 CYBERPULSE HOLOGRAPHIC MATRIX STREAM ⚡')
+        .setDescription('```prolog\n01000011 01011001 01000010 01000101 01010010\n[SECURE NODE CONNECTION ESTABLISHED]\n[QUANTUM ENCRYPTION: ACTIVE]\n[NEURAL FIREWALL: BYPASSING MAINFRAME...]\n01010000 01010101 01001100 01010011 01000101\n```')
+        .setImage(DEFAULT_BANNER)
+        .setFooter({ text: 'CyberPulse Neural Network • Stream Active' })
+        .setTimestamp();
+      return message.channel.send({ embeds: [embed] });
+    }
+
+    // 20. !richboard (New Command 4)
+    if (command === 'richboard' || command === 'richest') {
+      const topRich = await UserCredit.find({ balance: { $gt: 0 } }).sort({ balance: -1 }).limit(5);
+      if (topRich.length === 0) return message.channel.send('📊 No credit balances recorded yet.');
+      let desc = '💎 **Top Richest Operatives by Neural Credit Balance:**\n\n';
+      topRich.forEach((res, i) => { desc += `${i === 0 ? '👑' : '⭐'} **#${i+1}** <@${res.discordId}> — **${res.balance.toLocaleString()}** Credits\n`; });
+      return message.channel.send({ embeds: [new EmbedBuilder().setColor(0x38bdf8).setTitle('💎 CYBERPULSE WEALTH LEADERBOARD 🚀').setDescription(desc).setTimestamp()] });
+    }
+
   } catch (err) {}
 });
 
@@ -566,8 +640,8 @@ client.on('interactionCreate', async (interaction) => {
         const totalStock = await VerifiedUser.countDocuments();
         const embed = new EmbedBuilder()
           .setColor(0x2b2d31)
-          .setTitle(`📦 ${interaction.guild.name}'s Server Stock ⚡`)
-          .setDescription(`• **offline:** \`${totalStock.toLocaleString()}\` 👥`)
+          .setTitle(`💀 CYBERPULSE SERVER STOCK ⚡`)
+          .setDescription(`\`\`\`yaml\n[ NEURAL DATABASE TELEMETRY ]\n\`\`\`\n• 👥 **offline:** \`${totalStock.toLocaleString()}\``)
           .setImage(DEFAULT_BANNER)
           .setTimestamp();
         return interaction.update({ embeds: [embed] });
@@ -629,7 +703,7 @@ client.on('interactionCreate', async (interaction) => {
           const targetGuild = await client.guilds.fetch(serverId);
           const botMember = await targetGuild.members.fetch(client.user.id);
           if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
-            return interaction.reply({ content: '❌ **Security Pre-Flight Failed:** CyberPulse bot lacks `Manage Roles` permission in target server.', ephemeral: true });
+            return interaction.reply({ content: '❌ **Security Pre-Flight Failed:** Bot lacks `Manage Roles` permission in target server.', ephemeral: true });
           }
           activeSessions.set(interaction.user.id, { serverId, guildName: targetGuild.name, memberCount: targetGuild.memberCount });
           const selectMenu = new StringSelectMenuBuilder().setCustomId('select_token_type').setPlaceholder('Select token protocol').addOptions(new StringSelectMenuOptionBuilder().setLabel('offline').setValue('offline'));
