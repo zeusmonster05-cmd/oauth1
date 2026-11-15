@@ -36,7 +36,7 @@ const OWNER_ID = '1370594462941581433';
 const DEFAULT_BANNER = 'https://cdn.discordapp.com/attachments/1533328616912584858/1569963008657068072/CyberPulse_Grunge_Skull_Logo.png?ex=6af55d7d&is=6af40bfd&hm=7038cbe90cd5b5f2eec728d7ce4f1b22fd7e6e59a3a8dcce8e2ca1e3d9113cc7&';
 
 if (!TOKEN || !CLIENT_ID || !CLIENT_SECRET || !MONGO_URI) {
-  console.error("❌ [FATAL ERROR]: Missing critical environment variables in Render settings.");
+  console.error("❌ [FATAL ERROR]: Missing critical environment variables.");
   process.exit(1);
 }
 
@@ -81,7 +81,9 @@ const Partner = mongoose.model('Partner', partnerSchema);
 
 const guildConfigSchema = new mongoose.Schema({
   guildId: { type: String, required: true, unique: true },
-  verifiedRoleId: { type: String, default: null }
+  verifiedRoleId: { type: String, default: null },
+  ticketSupportRoleId: { type: String, default: null },
+  ticketSupportUserId: { type: String, default: null }
 }, { collection: 'guildconfigs' });
 const GuildConfig = mongoose.model('GuildConfig', guildConfigSchema);
 
@@ -98,7 +100,6 @@ const Operation = mongoose.model('Operation', operationSchema);
 
 const activeSessions = new Map();
 
-// Random Jokes & Quotes for Stock Refreshes
 const cyberQuotes = [
   "💡 *\"In the grid, data is currency, and intelligence is power.\"*",
   "🚀 *\"The future belongs to those who build the infrastructure.\"*",
@@ -107,6 +108,7 @@ const cyberQuotes = [
   "🛡️ *\"There is no cloud, just someone else's computer. Keep your tokens safe.\"*"
 ];
 
+// ==================== HELPER FUNCTIONS ====================
 async function hasOwnerPrivileges(userId) {
   if (userId === OWNER_ID) return true;
   const isPartner = await Partner.findOne({ discordId: userId });
@@ -125,7 +127,27 @@ function calculatePrice(quantity) {
   return { quantity, bonusPercent, tierName, bonusCredits, totalCreditsGiven };
 }
 
-// ==================== EXPRESS HEALTH SERVER ====================
+async function sendCreditDM(userId, type, amount, newBalance, sourceText = '') {
+  try {
+    const user = await client.users.fetch(userId);
+    if (!user) return;
+
+    const isReceived = type === 'RECEIVED';
+    const embed = new EmbedBuilder()
+      .setColor(isReceived ? 0x00d4ff : 0xed4245)
+      .setTitle(isReceived ? '💰 Credits Received!' : '⬅️ Credits Revoked')
+      .setDescription(
+        isReceived
+          ? `⚫ **${amount.toLocaleString()}** offline credits have been added to your balance!${sourceText ? ` ${sourceText}` : ''}\n\n**Your Balance:**\n🟢 Online: \`0\`\n⚫ Offline: \`${newBalance.toLocaleString()}\`\n🎉 Reaction: \`0\``
+          : `⚫ **${amount.toLocaleString()}** offline credits have been removed from your balance${sourceText ? ` ${sourceText}` : '.'}\n\n**Your Balance:**\n🟢 Online: \`0\`\n⚫ Offline: \`${newBalance.toLocaleString()}\`\n🎉 Reaction: \`0\``
+      )
+      .setTimestamp();
+
+    await user.send({ embeds: [embed] }).catch(() => {});
+  } catch (err) {}
+}
+
+// ==================== EXPRESS HEALTH & OAUTH SERVER ====================
 const app = express();
 const server = http.createServer(app);
 app.use(express.json());
@@ -255,9 +277,18 @@ const client = new Client({
 });
 
 const slashCommands = [
-  new SlashCommandBuilder().setName('verifiedrole').setDescription('🛡️ Configure the verified role assigned automatically upon user verification.')
+  new SlashCommandBuilder()
+    .setName('verifiedrole')
+    .setDescription('🛡️ Configure the verified role assigned automatically upon user verification.')
     .addRoleOption(option => option.setName('role').setDescription('Select the verified role').setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName('ticketset')
+    .setDescription('🎫 Configure which Staff Role or User handles credit purchase tickets in this server.')
+    .addRoleOption(option => option.setName('role').setDescription('Select the Support/Staff Role to ping & grant access').setRequired(false))
+    .addUserOption(option => option.setName('user').setDescription('Select a specific Staff User to ping & grant access').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -265,16 +296,33 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 client.once('clientReady', async () => {
   console.log(`🤖 [DISCORD BOT] Online and locked in as ${client.user.tag}!`);
   
-  // Set Purple Streaming Status
-  client.user.setPresence({
-    activities: [{ name: 'CyberPulse Global Network ⚡', type: ActivityType.Streaming, url: 'https://twitch.tv/discord' }],
-    status: 'online'
-  });
+  // Rotating Streaming Status Loop (All 5 Locked with Purple Streaming Indicator)
+  let statusIndex = 0;
+  setInterval(async () => {
+    try {
+      const verifiedCount = await VerifiedUser.countDocuments();
+      const streamingStatuses = [
+        { name: 'CyberPulse Global Network ⚡', type: ActivityType.Streaming, url: 'https://twitch.tv/discord' },
+        { name: `Watching over ${verifiedCount.toLocaleString()} verified members 👥`, type: ActivityType.Streaming, url: 'https://twitch.tv/discord' },
+        { name: 'Listening to quantum neural signals 🔮', type: ActivityType.Streaming, url: 'https://twitch.tv/discord' },
+        { name: 'Playing in the Punisher Grid 💀', type: ActivityType.Streaming, url: 'https://twitch.tv/discord' },
+        { name: 'Competing in the CyberPulse Arena 🏆', type: ActivityType.Streaming, url: 'https://twitch.tv/discord' }
+      ];
+
+      const currentStatus = streamingStatuses[statusIndex];
+      client.user.setPresence({
+        activities: [currentStatus],
+        status: 'online'
+      });
+
+      statusIndex = (statusIndex + 1) % streamingStatuses.length;
+    } catch (e) {}
+  }, 15000);
 
   try { await rest.put(Routes.applicationCommands(CLIENT_ID), { body: slashCommands }); } catch (err) {}
 });
 
-// Auto-Healer & Pruner (Delayed 10 mins on boot)
+// Auto-Healer & Pruner
 setTimeout(() => {
   setInterval(async () => {
     try {
@@ -313,6 +361,23 @@ client.on('messageCreate', async (message) => {
   const hasPrivileges = await hasOwnerPrivileges(message.author.id);
 
   try {
+    // 0. !help / !cmds
+    if (command === 'help' || command === 'cmds') {
+      const embed = new EmbedBuilder()
+        .setColor(0x7000ff)
+        .setTitle('⚡ CYBERPULSE COMMAND MATRIX 🔮')
+        .setDescription('Complete list of active tactical modules and commands:')
+        .addFields(
+          { name: '🌐 Core & Panels', value: '`!verify` • `!panel` • `!stock` • `!stats` • `!dashboard`', inline: false },
+          { name: '💳 Economy & Resellers', value: '`!bal` • `!rbal` • `!calc <amt>` • `!resale @user <amt>` • `!topresellers` • `!richboard`', inline: false },
+          { name: '⚔️ Interactive & Security', value: '`!audit` • `!cyberduel @user <amt>` • `!matrix`', inline: false },
+          { name: '🛡️ Admin & Setup', value: '`/ticketset` • `/verifiedrole` • `!gc` • `!rc` • `!partner` • `!reseller` • `!pull` • `!backup`', inline: false }
+        )
+        .setImage(DEFAULT_BANNER)
+        .setFooter({ text: 'CyberPulse Quantum Core • All Systems Nominal' });
+      return message.channel.send({ embeds: [embed] });
+    }
+
     // 1. !verify [image_url]
     if (command === 'verify') {
       const customImage = args[0] && args[0].startsWith('http') ? args[0] : DEFAULT_BANNER;
@@ -320,7 +385,7 @@ client.on('messageCreate', async (message) => {
         .setTitle('⚡ CYBERPULSE NEURAL VERIFICATION 🔮')
         .setDescription('✨ Click the secure quantum button below to complete authorization and sync your secure credentials.')
         .setImage(customImage)
-        .setFooter({ text: '🛡️ CyberPulse Quantum Security Protocol v10.0' });
+        .setFooter({ text: '🛡️ CyberPulse Quantum Security Protocol' });
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setLabel('Verify System Clearance').setStyle(ButtonStyle.Link).setURL(`${PUBLIC_URL}/verify`).setEmoji('🔐')
       );
@@ -329,11 +394,13 @@ client.on('messageCreate', async (message) => {
 
     // 2. !panel [image_url]
     if (command === 'panel') {
-      if (!hasPrivileges) return message.channel.send('❌ **Access Denied:** Only the supreme owner or authorized partners can deploy the master nexus panel.');
+      if (!hasPrivileges && !message.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        return message.channel.send('❌ **Access Denied:** You need `Manage Server` or Partner clearance to deploy the panel.');
+      }
       const customImage = args[0] && args[0].startsWith('http') ? args[0] : DEFAULT_BANNER;
       const embed = new EmbedBuilder().setColor(0x7000ff)
         .setTitle('💀 CYBERPULSE MASTER NEXUS HUB 🚀')
-        .setDescription('🛒 **Buy Credits:** Open an encrypted private administration ticket.\n💳 **My Credits:** Inspect your live neural credit balance.\n⚡ **Add Members:** Initialize high-speed member deployment sequence.\n🤖 **Add Bot:** Invite CyberPulse into your private infrastructure.')
+        .setDescription('🛒 **Buy Credits:** Open an encrypted private support ticket.\n💳 **My Credits:** Inspect your live neural credit balance.\n⚡ **Add Members:** Initialize high-speed member deployment sequence.\n🤖 **Add Bot:** Invite CyberPulse into your private infrastructure.')
         .setImage(customImage)
         .setFooter({ text: '⚡ CyberPulse Command Center • All Systems Operational' });
       
@@ -346,7 +413,7 @@ client.on('messageCreate', async (message) => {
       return message.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // 3. !stock [image_url] (Clean stock layout without telemetry)
+    // 3. !stock [image_url]
     if (command === 'stock') {
       const totalStock = await VerifiedUser.countDocuments();
       const customImage = args[0] && args[0].startsWith('http') ? args[0] : DEFAULT_BANNER;
@@ -443,8 +510,12 @@ client.on('messageCreate', async (message) => {
       if (!targetUser || isNaN(amount) || amount <= 0) return message.channel.send('❌ **Usage:** `!gc @user <amount>`');
       const calc = calculatePrice(amount);
       let uc = await UserCredit.findOne({ discordId: targetUser.id }) || new UserCredit({ discordId: targetUser.id, balance: 0 });
-      uc.balance += calc.totalCreditsGiven; uc.offlineAdded += calc.totalCreditsGiven;
+      uc.balance += calc.totalCreditsGiven;
+      uc.offlineAdded += calc.totalCreditsGiven;
       await uc.save();
+
+      await sendCreditDM(targetUser.id, 'RECEIVED', calc.totalCreditsGiven, uc.balance);
+
       return message.channel.send(`📦 Successfully added **${amount.toLocaleString()}** base credits (+**${calc.bonusCredits.toLocaleString()}** tier bonus) to <@${targetUser.id}>! 🌟`);
     }
 
@@ -456,9 +527,13 @@ client.on('messageCreate', async (message) => {
       if (!targetUser || isNaN(amount) || amount <= 0) return message.channel.send('❌ **Usage:** `!rc @user <amount>`');
       let uc = await UserCredit.findOne({ discordId: targetUser.id }) || new UserCredit({ discordId: targetUser.id, balance: 0 });
       const deducted = Math.min(uc.balance, amount);
-      uc.balance = Math.max(0, uc.balance - amount); uc.offlineConsumed += deducted;
+      uc.balance = Math.max(0, uc.balance - amount);
+      uc.offlineConsumed += deducted;
       await uc.save();
-      return message.channel.send(`🔻 Deducted **${amount.toLocaleString()}** credits from <@${targetUser.id}>. Remaining balance: \`${uc.balance.toLocaleString()}\`.`);
+
+      await sendCreditDM(targetUser.id, 'REVOKED', deducted, uc.balance, 'by administration.');
+
+      return message.channel.send(`🔻 Deducted **${deducted.toLocaleString()}** credits from <@${targetUser.id}>. Remaining balance: \`${uc.balance.toLocaleString()}\`.`);
     }
 
     // 11. !partner @user
@@ -488,9 +563,19 @@ client.on('messageCreate', async (message) => {
       if (!isReseller && !hasPrivileges) return message.channel.send('❌ **Access Denied:** You must be a registered reseller to transfer credits.');
       let sender = await UserCredit.findOne({ discordId: message.author.id });
       if (!sender || sender.balance < amount) return message.channel.send('❌ **Error:** Insufficient credit balance.');
-      sender.balance -= amount; sender.offlineConsumed += amount; await sender.save();
+      
+      sender.balance -= amount;
+      sender.offlineConsumed += amount;
+      await sender.save();
+
       let recipient = await UserCredit.findOne({ discordId: targetUser.id }) || new UserCredit({ discordId: targetUser.id, balance: 0 });
-      recipient.balance += amount; recipient.offlineAdded += amount; await recipient.save();
+      recipient.balance += amount;
+      recipient.offlineAdded += amount;
+      await recipient.save();
+
+      await sendCreditDM(message.author.id, 'REVOKED', amount, sender.balance, `via reseller transfer to ${targetUser.username}.`);
+      await sendCreditDM(targetUser.id, 'RECEIVED', amount, recipient.balance);
+
       return message.channel.send(`💼 Successfully transferred **${amount.toLocaleString()}** credits to <@${targetUser.id}>! 🚀`);
     }
 
@@ -500,7 +585,7 @@ client.on('messageCreate', async (message) => {
       let uc = await UserCredit.findOne({ discordId: targetUser.id }) || { balance: 0, offlineAdded: 0, offlineConsumed: 0 };
       const embed = new EmbedBuilder().setColor(0x2b2d31)
         .setAuthor({ name: `Reseller Ledger — ${targetUser.username}`, iconURL: 'https://cdn.discordapp.com/emojis/841261569083815946.webp?size=96' })
-        .setDescription(`**Status:** 🟢 Active Quantum Node\n\n🟢 **Online Members:** 0\n🔘 **Offline Members:** ${uc.balance.toLocaleString()}\n🎉 **Reaction Members:** 0\n\n──────────────────────────────\n\n📈 **Online Added:** 0\n📈 **Offline Added:** ${uc.offlineAdded.toLocaleString()}\n📈 **Reaction Added:** 0\n📉 **Online Consumed:** 0\n📉 **Offline Consumed:** ${uc.offlineConsumed.toLocaleString()}\n📉 **Reaction Consumed:** 0`)
+        .setDescription(`**Status:** 🟢 Active Quantum Node\n\n🟢 **Online Members:** \`0\`\n⚫ **Offline Members:** \`${uc.balance.toLocaleString()}\`\n🎉 **Reaction Members:** \`0\`\n\n──────────────────────────────\n\n📈 **Online Added:** \`0\`\n📈 **Offline Added:** \`${uc.offlineAdded.toLocaleString()}\`\n📈 **Reaction Added:** \`0\`\n📉 **Online Consumed:** \`0\`\n📉 **Offline Consumed:** \`${uc.offlineConsumed.toLocaleString()}\`\n📉 **Reaction Consumed:** \`0\``)
         .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
         .setFooter({ text: 'CyberPulse • Reseller Quantum Ledger' }).setTimestamp();
       return message.channel.send({ embeds: [embed] });
@@ -527,6 +612,7 @@ client.on('messageCreate', async (message) => {
             await new Promise(r => setTimeout(r, 600));
           } catch (err) {}
         }
+        await message.author.send(`Successfully added **\`${successfulJoins}\`** accounts (offline)!`).catch(() => {});
         return statusMsg.edit(`✅ Successfully synchronized and pulled **${successfulJoins.toLocaleString()}** members into target server! 🔥`);
       } catch (err) { return statusMsg.edit('❌ Critical error executing manual token synchronization pull.'); }
     }
@@ -612,7 +698,7 @@ client.on('messageCreate', async (message) => {
   } catch (err) {}
 });
 
-// Background Dispatch Engine
+// ==================== BACKGROUND DISPATCH ENGINE ====================
 async function executeDiscordDispatch(opId, userId, guildId, quantity, messageRef) {
   try {
     const targetGuild = await client.guilds.fetch(guildId);
@@ -632,6 +718,14 @@ async function executeDiscordDispatch(opId, userId, guildId, quantity, messageRe
       } catch (err) {}
     }
     await Operation.findOneAndUpdate({ opId }, { successfulQuantity: successful, status: 'COMPLETED' });
+    
+    try {
+      const operator = await client.users.fetch(userId);
+      if (operator) {
+        await operator.send(`Successfully added **\`${successful}\`** accounts (offline)!`).catch(() => {});
+      }
+    } catch (e) {}
+
     await messageRef.edit(`✅ Operation \`${opId}\` Successfully Completed! Deployed **${successful.toLocaleString()}** members. 🔥`);
   } catch (err) {
     await Operation.findOneAndUpdate({ opId }, { status: 'FAILED' });
@@ -646,6 +740,31 @@ client.on('interactionCreate', async (interaction) => {
       const role = interaction.options.getRole('role');
       await GuildConfig.findOneAndUpdate({ guildId: interaction.guild.id }, { verifiedRoleId: role.id }, { upsert: true });
       return interaction.reply({ content: `✅ Verified role successfully updated to ${role}! 🛡️`, ephemeral: true });
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'ticketset') {
+      const role = interaction.options.getRole('role');
+      const user = interaction.options.getUser('user');
+
+      if (!role && !user) {
+        return interaction.reply({ content: '⚠️ Please specify at least a **Role** or a **User** to assign ticket handling to!', ephemeral: true });
+      }
+
+      await GuildConfig.findOneAndUpdate(
+        { guildId: interaction.guild.id },
+        { 
+          ticketSupportRoleId: role ? role.id : null,
+          ticketSupportUserId: user ? user.id : null
+        },
+        { upsert: true }
+      );
+
+      let confirmMsg = '🎫 **Ticket Support Handler Updated!**\n';
+      if (role) confirmMsg += `• **Assigned Role:** ${role}\n`;
+      if (user) confirmMsg += `• **Assigned Staff User:** ${user}\n`;
+      confirmMsg += '\nWhenever a member opens a ticket in this server, they will automatically be added and notified.';
+
+      return interaction.reply({ content: confirmMsg, ephemeral: true });
     }
 
     if (interaction.isButton()) {
@@ -668,19 +787,97 @@ client.on('interactionCreate', async (interaction) => {
         const existing = interaction.guild.channels.cache.find(c => c.name === channelName);
         if (existing) return interaction.reply({ content: `❌ Active purchase ticket already exists: ${existing}`, ephemeral: true });
 
+        const config = await GuildConfig.findOne({ guildId: interaction.guild.id });
+        const supportRoleId = config?.ticketSupportRoleId;
+        const supportUserId = config?.ticketSupportUserId || OWNER_ID;
+
+        const permissionOverwrites = [
+          { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+        ];
+
+        if (supportUserId) {
+          permissionOverwrites.push({
+            id: supportUserId,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels]
+          });
+        }
+
+        if (supportRoleId) {
+          permissionOverwrites.push({
+            id: supportRoleId,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels]
+          });
+        }
+
         const channel = await interaction.guild.channels.create({
-          name: channelName, type: ChannelType.GuildText,
-          permissionOverwrites: [
-            { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-            { id: OWNER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-          ]
+          name: channelName,
+          type: ChannelType.GuildText,
+          permissionOverwrites
         });
-        const ticketEmbed = new EmbedBuilder().setColor(0x7000ff)
+
+        let mentionStr = `<@${interaction.user.id}>`;
+        if (supportRoleId) mentionStr += ` | <@&${supportRoleId}>`;
+        if (supportUserId) mentionStr += ` | <@${supportUserId}>`;
+
+        const ticketEmbed = new EmbedBuilder()
+          .setColor(0x7000ff)
           .setTitle('🛒 CYBERPULSE CREDIT PURCHASE TICKET ⚡')
-          .setDescription(`Welcome <@${interaction.user.id}>!\nState your desired credit package or custom order volume to administration.\n\n**📦 Tier Packages:**\n• Starter: 500 Credits (1% Bonus)\n• Pro: 2,500 Credits (5% Bonus)\n• Enterprise: 10,000 Credits (15% Bonus)`);
-        await channel.send({ content: `<@${interaction.user.id}> | <@${OWNER_ID}>`, embeds: [ticketEmbed] });
+          .setDescription(`Welcome <@${interaction.user.id}>!\nState your desired credit package or custom order volume below. A staff member will assist you shortly.\n\n**📦 Bulk Tier Packages:**\n• **Starter:** 500 Credits (+1% Bonus)\n• **Pro:** 2,500 Credits (+5% Bonus)\n• **Enterprise:** 10,000 Credits (+15% Bonus)`)
+          .setFooter({ text: 'Use the buttons below to Claim or Close this ticket' })
+          .setTimestamp();
+
+        const ticketControls = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('btn_claim_ticket').setLabel('Claim Ticket').setStyle(ButtonStyle.Primary).setEmoji('🙋‍♂️'),
+          new ButtonBuilder().setCustomId('btn_close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
+        );
+
+        await channel.send({ content: mentionStr, embeds: [ticketEmbed], components: [ticketControls] });
         return interaction.reply({ content: `✅ Purchase ticket successfully created: ${channel}`, ephemeral: true });
+      }
+
+      if (interaction.customId === 'btn_claim_ticket') {
+        const config = await GuildConfig.findOne({ guildId: interaction.guild.id });
+        const supportRoleId = config?.ticketSupportRoleId;
+        const supportUserId = config?.ticketSupportUserId || OWNER_ID;
+
+        const isStaff = 
+          interaction.user.id === OWNER_ID ||
+          interaction.user.id === supportUserId ||
+          (supportRoleId && interaction.member.roles.cache.has(supportRoleId)) ||
+          interaction.member.permissions.has(PermissionFlagsBits.ManageChannels);
+
+        if (!isStaff) {
+          return interaction.reply({ content: '❌ **Access Denied:** Only authorized support staff can claim this ticket.', ephemeral: true });
+        }
+
+        const updatedControls = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('btn_claim_ticket').setLabel(`Claimed by ${interaction.user.username}`).setStyle(ButtonStyle.Secondary).setEmoji('✅').setDisabled(true),
+          new ButtonBuilder().setCustomId('btn_close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
+        );
+
+        await interaction.update({ components: [updatedControls] });
+
+        const claimEmbed = new EmbedBuilder()
+          .setColor(0x10b981)
+          .setDescription(`🛡️ **Ticket Claimed!** <@${interaction.user.id}> is now handling this purchase inquiry.`)
+          .setTimestamp();
+
+        return interaction.channel.send({ embeds: [claimEmbed] });
+      }
+
+      if (interaction.customId === 'btn_close_ticket') {
+        const closeEmbed = new EmbedBuilder()
+          .setColor(0xed4245)
+          .setTitle('🔒 Closing Ticket...')
+          .setDescription(`Ticket closed by <@${interaction.user.id}>. This channel will be permanently deleted in **5 seconds**.`)
+          .setTimestamp();
+
+        await interaction.reply({ embeds: [closeEmbed] });
+        setTimeout(() => {
+          interaction.channel.delete().catch(() => {});
+        }, 5000);
+        return;
       }
 
       if (interaction.customId === 'btn_my_credits') {
@@ -701,13 +898,21 @@ client.on('interactionCreate', async (interaction) => {
         let uc = await UserCredit.findOne({ discordId: interaction.user.id });
         if (!uc || uc.balance < session.quantity) return interaction.update({ content: `❌ Insufficient credit balance.`, embeds: [], components: [] });
 
-        uc.balance -= session.quantity; uc.offlineConsumed += session.quantity; await uc.save();
+        uc.balance -= session.quantity;
+        uc.offlineConsumed += session.quantity;
+        await uc.save();
+
         const opId = `DISCORD-OP-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
         await Operation.create({ opId, discordId: interaction.user.id, targetGuildId: session.serverId, requestedQuantity: session.quantity });
 
         await interaction.update({ content: `🚀 Dispatching members ⏳\nProgress: 0/${session.quantity}\n🆔 Operation ID: \`${opId}\``, embeds: [], components: [] });
         const messageRef = await interaction.fetchReply();
         executeDiscordDispatch(opId, interaction.user.id, session.serverId, session.quantity, messageRef);
+      }
+
+      if (interaction.customId === 'btn_cancel_purchase') {
+        activeSessions.delete(interaction.user.id);
+        return interaction.update({ content: '❌ **Operation Cancelled.** No credits were deducted.', embeds: [], components: [] });
       }
     }
 
